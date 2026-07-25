@@ -83,12 +83,12 @@ macOS or Linux:
 MODELS_PATH="/path/to/models" /path/to/reaper
 ```
 
-Hardware-accelerated builds are available with `cargo build --release
---features cuda` on supported Windows and Linux systems, or `cargo build
---release --features metal` on macOS. The project carries a small patch to
-Candle's Metal kernels that omits unused BF16 GEMV variants on older Metal
-language targets, allowing the F32 Whisper implementation to use Metal on M1
-and later Macs.
+Hardware-accelerated builds are available with
+`cargo build --release --features cuda` on supported Windows and Linux systems, or
+`cargo build --release --features metal` on macOS. The project carries a small
+patch to Candle's Metal kernels that omits unused BF16 GEMV variants on older
+Metal language targets, allowing the F32 Whisper implementation to use Metal
+on M1 and later Macs.
 
 ## Design
 

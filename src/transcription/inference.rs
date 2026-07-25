@@ -74,7 +74,7 @@ pub fn transcribe(
 ) -> Result<Vec<TranscriptSegment>, String> {
     let started = Instant::now();
     emit_stage(job_id, "Loading Model", 0);
-    let device = inference_device(job_id)?;
+    let device = inference_device()?;
     log_job(
         job_id,
         &format!(
@@ -740,37 +740,16 @@ fn read_mel_filters(bundle: &ModelBundle, num_mel_bins: usize) -> Result<Vec<f32
     Ok(filters)
 }
 
-fn inference_device(job_id: &str) -> Result<Device, String> {
-    let _ = job_id;
+fn inference_device() -> Result<Device, String> {
     if std::env::var_os("REASPEECH_FORCE_CPU").is_some() {
         return Ok(Device::Cpu);
     }
-    #[cfg(all(feature = "metal", target_os = "macos"))]
-    {
-        if std::env::var_os("REASPEECH_FORCE_METAL").is_none() {
-            if !metal_supports_bfloat() {
-                log_job(
-                    job_id,
-                    "Metal GEMV requires Apple GPU family 9 or newer; falling back to CPU",
-                );
-                emit_stage(job_id, "Metal unsupported; using CPU", 0);
-                return Ok(Device::Cpu);
-            }
-        }
-        return Device::new_metal(0)
-            .map_err(|error| format!("Could not initialize Metal: {error}"));
-    }
-    #[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]
+    #[cfg(feature = "metal")]
+    return Device::new_metal(0).map_err(|error| format!("Could not initialize Metal: {error}"));
+    #[cfg(all(not(feature = "metal"), feature = "cuda"))]
     return Device::new_cuda(0).map_err(|error| format!("Could not initialize CUDA: {error}"));
     #[allow(unreachable_code)]
     Ok(Device::Cpu)
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-fn metal_supports_bfloat() -> bool {
-    use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily};
-
-    MTLCreateSystemDefaultDevice().is_some_and(|device| device.supportsFamily(MTLGPUFamily::Apple9))
 }
 
 fn configured_beam_size() -> usize {
@@ -863,5 +842,34 @@ mod tests {
         ];
 
         assert_eq!(group_speech_regions(regions).len(), 2);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    #[ignore = "requires a Metal GPU and downloaded Whisper model"]
+    fn metal_whisper_smoke_test() {
+        let directory = std::env::var_os("REASPEECH_TEST_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .expect("set REASPEECH_TEST_MODEL_DIR to a downloaded Whisper model directory");
+        let bundle = ModelBundle {
+            config: directory.join("config.json"),
+            tokenizer: directory.join("tokenizer.json"),
+            weights: directory.join("model.safetensors"),
+            mel_filters_80: directory.join("melfilters.bytes"),
+            mel_filters_128: directory.join("melfilters128.bytes"),
+        };
+        let context = WorkerContext::default();
+        let silence = vec![0.0; SAMPLE_RATE];
+
+        transcribe(
+            "metal-smoke-test",
+            &silence,
+            &bundle,
+            None,
+            Some("en"),
+            false,
+            &context,
+        )
+        .unwrap();
     }
 }

@@ -21,7 +21,9 @@ contains the transcript segments:
 {"type":"completed","jobId":"reaspeech-1","segments":[{"startMs":0,"endMs":820,"text":"Hello","confidence":0.94}]}
 ```
 
-See `examples/transcribe.lua` for a complete deferred polling loop.
+See `examples/transcribe.lua` for a complete deferred polling loop. The
+`examples/imgui` directory contains a ReaImGui interface for transcribing
+selected media items interactively.
 
 ## Build and install
 
@@ -83,7 +85,9 @@ MODELS_PATH="/path/to/models" /path/to/reaper
 
 Hardware-accelerated builds are available with `cargo build --release
 --features cuda` on supported Windows and Linux systems, or `cargo build
---release --features metal` on macOS.
+--release --features metal` on macOS. Candle's current Metal GEMV kernels
+require Apple GPU family 9 or newer (M3 and later); Metal builds automatically
+use the CPU on earlier Macs.
 
 ## Design
 

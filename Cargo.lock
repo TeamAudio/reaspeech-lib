@@ -2442,6 +2442,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "ndarray",
+ "objc2-metal",
  "ort",
  "reaper-low",
  "reaper-macros",

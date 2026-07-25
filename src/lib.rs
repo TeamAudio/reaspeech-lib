@@ -47,9 +47,6 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
         )?;
     }
 
-    session
-        .reaper()
-        .show_console_msg("ReaSpeech: async transcription API loaded\n");
     Box::leak(session);
     Ok(())
 }

@@ -1,0 +1,38 @@
+[package]
+name = "reaspeech"
+version = "0.1.0"
+edition = "2021"
+description = "Async speech transcription API for REAPER ReaScripts"
+license = "MIT"
+
+[lib]
+name = "reaper_reaspeech"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+[dependencies]
+byteorder = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+ndarray = "0.17"
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+reaper-low = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
+reaper-macros = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
+reaper-medium = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", features = ["all"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+

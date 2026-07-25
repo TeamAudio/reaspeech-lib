@@ -12,6 +12,8 @@ build/icon.iconset/
 
 # Rust build output (Cargo.lock is committed for this application)
 native/*/target/
+target/
+.research/
 
 # Local worker fallback data and SQLite sidecar files
 models/

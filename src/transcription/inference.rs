@@ -38,6 +38,7 @@ struct SpeechRegion {
 struct Beam {
     model: whisper::model::Whisper,
     tokens: Vec<u32>,
+    token_log_probs: Vec<f64>,
     score: f64,
     finished: bool,
 }
@@ -61,6 +62,7 @@ struct DecodedPiece {
     start_seconds: f32,
     end_seconds: f32,
     text: String,
+    confidence: f32,
 }
 
 #[derive(serde::Deserialize)]
@@ -221,7 +223,7 @@ pub fn transcribe(
                 completed_samples.saturating_mul(100) as u64 / total_samples.max(1) as u64,
             );
             let mel = mel_tensor(&config, &mel_filters, &pcm[chunk.start..chunk.end], &device)?;
-            let (pieces, confidence, no_speech) = decoder.decode(
+            let (pieces, no_speech) = decoder.decode(
                 &mel,
                 chunk.end - chunk.start,
                 chunk_index,
@@ -250,7 +252,7 @@ pub fn transcribe(
                             + (piece.end_seconds * 1000.0).round() as i64)
                             .min(samples_to_ms(chunk.end)),
                         text: piece.text.trim().to_owned(),
-                        confidence,
+                        confidence: piece.confidence,
                     });
                 }
             }
@@ -340,7 +342,7 @@ impl Decoder {
         total_samples: usize,
         job_id: &str,
         cancellation: &Cancellation,
-    ) -> Result<(Vec<DecodedPiece>, f32, f64), String> {
+    ) -> Result<(Vec<DecodedPiece>, f64), String> {
         self.model.reset_kv_cache();
         let encoder_started = Instant::now();
         emit_stage(
@@ -396,6 +398,7 @@ impl Decoder {
             Beam {
                 model: self.model.clone(),
                 tokens: prefix,
+                token_log_probs: Vec::new(),
                 score: 0.0,
                 finished: false,
             },
@@ -475,13 +478,9 @@ impl Decoder {
             .ok_or("Whisper beam search returned no candidates")?;
         self.model = best.model.clone();
         let generated = &best.tokens[prefix_len..];
-        let pieces = self.timestamped_pieces(generated, audio_seconds as f32)?;
-        let token_count = generated.len().max(1) as f64;
-        Ok((
-            pieces,
-            (best.score / token_count).exp().clamp(0.0, 1.0) as f32,
-            no_speech,
-        ))
+        let pieces =
+            self.timestamped_pieces(generated, &best.token_log_probs, audio_seconds as f32)?;
+        Ok((pieces, no_speech))
     }
 
     fn apply_timestamp_rules(
@@ -567,13 +566,18 @@ impl Decoder {
     fn timestamped_pieces(
         &self,
         tokens: &[u32],
+        token_log_probs: &[f64],
         audio_seconds: f32,
     ) -> Result<Vec<DecodedPiece>, String> {
+        if tokens.len() != token_log_probs.len() {
+            return Err("Whisper token probabilities do not match generated tokens".into());
+        }
         let timestamp_begin = self.no_timestamps_token + 1;
         let mut pieces = Vec::new();
         let mut text_tokens = Vec::new();
+        let mut text_log_probs = Vec::new();
         let mut start_seconds = 0.0f32;
-        for &token in tokens {
+        for (&token, &log_prob) in tokens.iter().zip(token_log_probs) {
             if token == self.eot_token {
                 break;
             }
@@ -588,12 +592,15 @@ impl Decoder {
                         start_seconds,
                         end_seconds: time,
                         text,
+                        confidence: confidence_from_log_probs(&text_log_probs),
                     });
                     text_tokens.clear();
+                    text_log_probs.clear();
                 }
                 start_seconds = time;
             } else {
                 text_tokens.push(token);
+                text_log_probs.push(log_prob);
             }
         }
         if !text_tokens.is_empty() {
@@ -605,6 +612,7 @@ impl Decoder {
                 start_seconds,
                 end_seconds: audio_seconds,
                 text,
+                confidence: confidence_from_log_probs(&text_log_probs),
             });
         }
         Ok(pieces)
@@ -638,11 +646,21 @@ fn expand_beam(
         .map(|(token, logit)| {
             let mut next = beam.clone();
             next.tokens.push(token as u32);
-            next.score += logit as f64 - log_denom;
+            let log_prob = logit as f64 - log_denom;
+            next.token_log_probs.push(log_prob);
+            next.score += log_prob;
             next.finished = token as u32 == eot_token;
             next
         })
         .collect())
+}
+
+fn confidence_from_log_probs(log_probs: &[f64]) -> f32 {
+    if log_probs.is_empty() {
+        return 0.0;
+    }
+    let mean = log_probs.iter().sum::<f64>() / log_probs.len() as f64;
+    mean.exp().clamp(0.0, 1.0) as f32
 }
 
 fn normalized_score(beam: &Beam) -> f64 {
@@ -924,6 +942,14 @@ mod tests {
             serde_json::from_str(r#"{"suppress_tokens":[1,2,50360]}"#).unwrap();
 
         assert_eq!(config.suppress_tokens, [1, 2, 50360]);
+    }
+
+    #[test]
+    fn confidence_uses_geometric_mean_of_token_probabilities() {
+        let confidence = confidence_from_log_probs(&[0.9_f64.ln(), 0.4_f64.ln()]);
+
+        assert!((confidence - 0.6).abs() < f32::EPSILON);
+        assert_eq!(confidence_from_log_probs(&[]), 0.0);
     }
 
     #[test]

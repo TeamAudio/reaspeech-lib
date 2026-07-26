@@ -441,7 +441,11 @@ local function render()
     reaper.defer(render)
   else
     if state.job_id then reaper.ReaSpeech_Cancel(state.job_id) end
-    reaper.ImGui_DestroyContext(ctx)
+    -- Recent ReaImGui versions destroy contexts automatically when the script
+    -- exits. Older versions exposed an explicit cleanup function.
+    if reaper.ImGui_DestroyContext then
+      reaper.ImGui_DestroyContext(ctx)
+    end
   end
 end
 

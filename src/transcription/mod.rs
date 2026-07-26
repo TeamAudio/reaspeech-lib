@@ -29,7 +29,10 @@ pub struct Segment {
     pub confidence: f32,
 }
 
-pub fn run(request: &Request, context: &WorkerContext) -> Result<Vec<Segment>, String> {
+pub fn run<F>(request: &Request, context: &WorkerContext, mut on_segment: F) -> Result<(), String>
+where
+    F: FnMut(&Segment),
+{
     emit_stage(&request.job_id, "Decoding audio", 0);
     let audio = decode_audio_16khz_mono(&request.job_id, &request.audio_path, context)?;
     ensure_not_cancelled(&request.job_id, context)?;
@@ -50,18 +53,15 @@ pub fn run(request: &Request, context: &WorkerContext) -> Result<Vec<Segment>, S
         request.language.as_deref(),
         request.translate,
         context,
-    )
-    .map(|segments| {
-        segments
-            .into_iter()
-            .map(|segment| Segment {
+        |segment| {
+            on_segment(&Segment {
                 start_ms: segment.start_ms,
                 end_ms: segment.end_ms,
-                text: segment.text,
+                text: segment.text.clone(),
                 confidence: segment.confidence,
-            })
-            .collect()
-    })
+            });
+        },
+    )
 }
 
 fn ensure_not_cancelled(job_id: &str, context: &WorkerContext) -> Result<(), String> {

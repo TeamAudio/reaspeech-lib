@@ -16,11 +16,17 @@ language string for automatic language detection. `large-v3-turbo` is
 transcription-only; select `small`, `medium`, or `large-v3` when `translate` is
 enabled. `Poll` returns one queued
 event at a time and returns `""` when no event is ready. Event types are
-`started`, `progress`, `completed`, `cancelled`, and `error`. A completed event
-contains the transcript segments:
+`started`, `progress`, `segment`, `completed`, `cancelled`, and `error`. Each
+recognized segment is emitted immediately:
 
 ```json
-{"type":"completed","jobId":"reaspeech-1","segments":[{"startMs":0,"endMs":820,"text":"Hello","confidence":0.94}]}
+{"type":"segment","jobId":"reaspeech-1","segment":{"startMs":0,"endMs":820,"text":"Hello","confidence":0.94}}
+```
+
+The terminal `completed` event contains timing metadata:
+
+```json
+{"type":"completed","jobId":"reaspeech-1","elapsedMs":1234}
 ```
 
 See `examples/transcribe.lua` for a complete deferred polling loop. The

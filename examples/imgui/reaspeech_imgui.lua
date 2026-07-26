@@ -1,5 +1,5 @@
 -- @description ReaSpeech: transcribe selected media items
--- @version 1.0
+-- @version 1.1
 -- @author ReaSpeech
 -- @about
 --   A small ReaImGui example for the ReaSpeech extension. Select one or more
@@ -198,10 +198,12 @@ local state = {
   progress = 0,
   status = "Select media items to begin.",
   results = {},
+  streaming_result = nil,
   cancel_requested = false,
 }
 
 local function start_next_job()
+  state.streaming_result = nil
   state.current = table.remove(state.queue, 1)
   if not state.current then
     state.job_id = nil
@@ -231,6 +233,7 @@ end
 local function begin_transcription()
   state.queue = selected_jobs()
   state.results = {}
+  state.streaming_result = nil
   state.cancel_requested = false
   if #state.queue == 0 then
     state.status = "No selected audio items have file-backed active takes."
@@ -251,12 +254,26 @@ local function handle_event(event)
     local total = tonumber(event.total) or 100
     state.progress = total > 0 and math.min((tonumber(event.completed) or 0) / total, 1) or 0
     state.status = event.message or "Transcribing..."
+  elseif event.type == "segment" then
+    if not state.streaming_result then
+      state.streaming_result = {
+        job = state.current,
+        segments = {},
+      }
+      state.results[#state.results + 1] = state.streaming_result
+    end
+    if event.segment then
+      state.streaming_result.segments[#state.streaming_result.segments + 1] = event.segment
+    end
   elseif event.type == "completed" then
-    state.results[#state.results + 1] = {
-      job = state.current,
-      segments = event.segments or {},
-      elapsed_ms = event.elapsedMs,
-    }
+    if not state.streaming_result then
+      state.streaming_result = {
+        job = state.current,
+        segments = {},
+      }
+      state.results[#state.results + 1] = state.streaming_result
+    end
+    state.streaming_result.elapsed_ms = event.elapsedMs
     state.job_id = nil
     start_next_job()
   elseif event.type == "cancelled" then
@@ -265,10 +282,14 @@ local function handle_event(event)
     state.progress = 0
     state.status = "Cancelled."
   elseif event.type == "error" then
-    state.results[#state.results + 1] = {
-      job = state.current,
-      error = event.error or "Unknown transcription error",
-    }
+    if state.streaming_result then
+      state.streaming_result.error = event.error or "Unknown transcription error"
+    else
+      state.results[#state.results + 1] = {
+        job = state.current,
+        error = event.error or "Unknown transcription error",
+      }
+    end
     state.job_id = nil
     if state.cancel_requested then
       state.current = nil
@@ -352,7 +373,14 @@ local function render_results()
 
   for result_index, result in ipairs(state.results) do
     local suffix = result.elapsed_ms and (" (%.1f s)"):format(result.elapsed_ms / 1000) or ""
-    if reaper.ImGui_CollapsingHeader(ctx, result.job.label .. suffix .. "##" .. result_index) then
+    local flags = result == state.streaming_result
+        and reaper.ImGui_TreeNodeFlags_DefaultOpen()
+        or 0
+    if reaper.ImGui_CollapsingHeader(
+        ctx,
+        result.job.label .. suffix .. "##" .. result_index,
+        flags
+    ) then
       if result.error then
         reaper.ImGui_TextWrapped(ctx, "Error: " .. result.error)
       elseif #result.segments == 0 then

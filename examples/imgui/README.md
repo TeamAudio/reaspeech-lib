@@ -3,8 +3,9 @@
 `reaspeech_imgui.lua` is a simple interactive ReaScript that transcribes the
 file-backed active take of each selected audio item. It queues the items,
 displays recognition progress, supports cancellation, and lists the completed
-segments with their confidence scores. Click a segment to move REAPER's edit
-cursor to its position in the corresponding item.
+segments with their confidence scores as soon as each segment is recognized,
+even while the rest of the file is still processing. Click a segment to move
+REAPER's edit cursor to its position in the corresponding item.
 
 ## Requirements
 

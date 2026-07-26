@@ -113,7 +113,7 @@ impl SimpleBackend for CpuCastingSafetensors {
     }
 }
 
-pub fn transcribe(
+pub fn transcribe<F>(
     job_id: &str,
     pcm: &[f32],
     bundle: &ModelBundle,
@@ -121,7 +121,11 @@ pub fn transcribe(
     language: Option<&str>,
     translate: bool,
     context: &WorkerContext,
-) -> Result<Vec<TranscriptSegment>, String> {
+    mut on_segment: F,
+) -> Result<(), String>
+where
+    F: FnMut(&TranscriptSegment),
+{
     let started = Instant::now();
     emit_stage(job_id, "Loading Model", 0);
     let config: Config = serde_json::from_str(
@@ -173,7 +177,7 @@ pub fn transcribe(
         ),
     );
     if regions.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let first_mel = mel_tensor(
@@ -204,7 +208,6 @@ pub fn transcribe(
         .sum();
     let mut chunk_index = 0usize;
     let mut completed_samples = 0usize;
-    let mut segments = Vec::new();
     for region in regions {
         for chunk in split_region(region) {
             chunk_index += 1;
@@ -245,7 +248,7 @@ pub fn transcribe(
                     if piece.text.trim().is_empty() {
                         continue;
                     }
-                    segments.push(TranscriptSegment {
+                    let segment = TranscriptSegment {
                         start_ms: samples_to_ms(chunk.start)
                             + (piece.start_seconds * 1000.0).round() as i64,
                         end_ms: (samples_to_ms(chunk.start)
@@ -253,7 +256,8 @@ pub fn transcribe(
                             .min(samples_to_ms(chunk.end)),
                         text: piece.text.trim().to_owned(),
                         confidence: piece.confidence,
-                    });
+                    };
+                    on_segment(&segment);
                 }
             }
             completed_samples += chunk.end - chunk.start;
@@ -264,7 +268,7 @@ pub fn transcribe(
             );
         }
     }
-    Ok(segments)
+    Ok(())
 }
 
 fn model_var_builder<'a>(weights: &Path, device: &Device) -> Result<VarBuilder<'a>, String> {
@@ -1018,7 +1022,8 @@ mod tests {
         };
         let vad_model = std::env::var_os("REASPEECH_TEST_VAD_MODEL").map(std::path::PathBuf::from);
 
-        let segments = transcribe(
+        let mut segments = Vec::new();
+        transcribe(
             "metal-smoke-test",
             &pcm,
             &bundle,
@@ -1026,10 +1031,13 @@ mod tests {
             Some("en"),
             false,
             &context,
+            |segment| {
+                segments.push((segment.start_ms, segment.end_ms, segment.text.clone()));
+            },
         )
         .unwrap();
-        for segment in segments {
-            eprintln!("{}-{}: {}", segment.start_ms, segment.end_ms, segment.text);
+        for (start_ms, end_ms, text) in segments {
+            eprintln!("{start_ms}-{end_ms}: {text}");
         }
     }
 }

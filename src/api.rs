@@ -85,7 +85,16 @@ fn start(
     let worker_context = context().clone();
     thread::spawn(move || {
         let started = Instant::now();
-        let result = transcription::run(&request, &worker_context);
+        let result = transcription::run(&request, &worker_context, |segment| {
+            push_event(
+                &request.job_id,
+                json!({
+                    "type":"segment",
+                    "jobId":request.job_id,
+                    "segment":segment,
+                }),
+            );
+        });
         if worker_context.cancellation.is_cancelled(&request.job_id) {
             push_event(
                 &request.job_id,
@@ -93,13 +102,12 @@ fn start(
             );
         } else {
             match result {
-                Ok(segments) => push_event(
+                Ok(()) => push_event(
                     &request.job_id,
                     json!({
                         "type":"completed",
                         "jobId":request.job_id,
                         "elapsedMs":started.elapsed().as_millis(),
-                        "segments":segments,
                     }),
                 ),
                 Err(error) => push_event(

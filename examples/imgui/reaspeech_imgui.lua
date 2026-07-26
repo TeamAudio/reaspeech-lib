@@ -348,10 +348,14 @@ local function render_results()
       else
         for segment_index, segment in ipairs(result.segments) do
           local seconds = (segment.startMs or 0) / 1000
-          local label = ("%02d:%05.2f  %s"):format(
+          local score = segment.confidence ~= nil
+              and ("  [score: %.2f]"):format(segment.confidence)
+              or ""
+          local label = ("%02d:%05.2f  %s%s"):format(
             math.floor(seconds / 60),
             seconds % 60,
-            (segment.text or ""):match("^%s*(.-)%s*$")
+            (segment.text or ""):match("^%s*(.-)%s*$"),
+            score
           )
           local id = ("##segment-%d-%d"):format(result_index, segment_index)
           if reaper.ImGui_Selectable(ctx, label .. id) then

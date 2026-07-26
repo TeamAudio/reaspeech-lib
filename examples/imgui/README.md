@@ -5,7 +5,8 @@ file-backed active take of each selected audio item. It queues the items,
 displays recognition progress, supports cancellation, and lists the completed
 segments with their confidence scores as soon as each segment is recognized,
 even while the rest of the file is still processing. Click a segment to move
-REAPER's edit cursor to its position in the corresponding item.
+REAPER's edit cursor to its position in the corresponding item. Double-click a
+segment to move the cursor and start playback when the transport is stopped.
 
 ## Requirements
 

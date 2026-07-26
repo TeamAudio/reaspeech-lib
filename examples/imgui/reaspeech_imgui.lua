@@ -398,8 +398,18 @@ local function render_results()
             score
           )
           local id = ("##segment-%d-%d"):format(result_index, segment_index)
-          if reaper.ImGui_Selectable(ctx, label .. id) then
+          local selected = reaper.ImGui_Selectable(
+            ctx,
+            label .. id,
+            false,
+            reaper.ImGui_SelectableFlags_AllowDoubleClick()
+          )
+          if selected then
             seek_to_segment(result, segment)
+            if reaper.ImGui_IsMouseDoubleClicked(ctx, 0)
+                and reaper.GetPlayState() % 2 == 0 then
+              reaper.OnPlayButton()
+            end
           end
         end
       end

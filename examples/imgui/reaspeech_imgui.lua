@@ -367,7 +367,7 @@ end
 
 local function render_results()
   if #state.results == 0 then
-    reaper.ImGui_TextDisabled(ctx, "Completed transcripts will appear here.")
+    reaper.ImGui_TextDisabled(ctx, "Recognized segments will appear here as they become available.")
     return
   end
 

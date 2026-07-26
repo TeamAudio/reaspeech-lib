@@ -307,7 +307,7 @@ local function seek_to_segment(result, segment)
   local play_rate = reaper.GetMediaItemTakeInfo_Value(result.job.take, "D_PLAYRATE")
   local project_position = item_position + ((segment.startMs or 0) / 1000 - source_offset) / play_rate
   project_position = math.max(item_position, math.min(project_position, item_position + item_length))
-  reaper.SetEditCurPos(project_position, true, false)
+  reaper.SetEditCurPos(project_position, true, true)
 end
 
 local function render_options()

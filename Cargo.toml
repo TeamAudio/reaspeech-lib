@@ -42,3 +42,4 @@ panic = "abort"
 
 [patch.crates-io]
 candle-metal-kernels = { path = "vendor/candle-metal-kernels" }
+candle-kernels = { path = "vendor/candle-kernels" }

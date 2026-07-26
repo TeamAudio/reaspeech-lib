@@ -3,8 +3,8 @@ use super::models::ModelBundle;
 use super::vad::SileroVad;
 use crate::common::{Cancellation, WorkerContext};
 use byteorder::{ByteOrder, LittleEndian};
-use candle_core::{Device, IndexOp, Tensor};
-use candle_nn::{ops::softmax, VarBuilder};
+use candle_core::{DType, Device, IndexOp, Shape, Tensor};
+use candle_nn::{ops::softmax, var_builder::SimpleBackend, VarBuilder};
 use candle_transformers::models::whisper::{self as whisper, audio, Config};
 use std::fs;
 use std::fs::OpenOptions;
@@ -63,6 +63,54 @@ struct DecodedPiece {
     text: String,
 }
 
+#[derive(serde::Deserialize)]
+struct GenerationConfig {
+    #[serde(default)]
+    suppress_tokens: Vec<u32>,
+}
+
+struct CpuCastingSafetensors {
+    tensors: candle_core::safetensors::MmapedSafetensors,
+}
+
+impl SimpleBackend for CpuCastingSafetensors {
+    fn get(
+        &self,
+        shape: Shape,
+        name: &str,
+        _: candle_nn::Init,
+        dtype: DType,
+        device: &Device,
+    ) -> candle_core::Result<Tensor> {
+        let tensor = self.get_unchecked(name, dtype, device)?;
+        if tensor.shape() != &shape {
+            return Err(candle_core::Error::UnexpectedShape {
+                msg: format!("shape mismatch for {name}"),
+                expected: shape,
+                got: tensor.shape().clone(),
+            }
+            .bt());
+        }
+        Ok(tensor)
+    }
+
+    fn get_unchecked(
+        &self,
+        name: &str,
+        dtype: DType,
+        device: &Device,
+    ) -> candle_core::Result<Tensor> {
+        self.tensors
+            .load(name, &Device::Cpu)?
+            .to_dtype(dtype)?
+            .to_device(device)
+    }
+
+    fn contains_tensor(&self, name: &str) -> bool {
+        self.tensors.get(name).is_ok()
+    }
+}
+
 pub fn transcribe(
     job_id: &str,
     pcm: &[f32],
@@ -74,6 +122,16 @@ pub fn transcribe(
 ) -> Result<Vec<TranscriptSegment>, String> {
     let started = Instant::now();
     emit_stage(job_id, "Loading Model", 0);
+    let config: Config = serde_json::from_str(
+        &fs::read_to_string(&bundle.config)
+            .map_err(|error| format!("Could not read Whisper configuration: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid Whisper configuration: {error}"))?;
+    let generation_config: GenerationConfig = serde_json::from_str(
+        &fs::read_to_string(&bundle.generation_config)
+            .map_err(|error| format!("Could not read Whisper generation configuration: {error}"))?,
+    )
+    .map_err(|error| format!("Invalid Whisper generation configuration: {error}"))?;
     let device = inference_device()?;
     log_job(
         job_id,
@@ -83,21 +141,9 @@ pub fn transcribe(
             configured_beam_size()
         ),
     );
-    let config: Config = serde_json::from_str(
-        &fs::read_to_string(&bundle.config)
-            .map_err(|error| format!("Could not read Whisper configuration: {error}"))?,
-    )
-    .map_err(|error| format!("Invalid Whisper configuration: {error}"))?;
     let tokenizer = Tokenizer::from_file(&bundle.tokenizer)
         .map_err(|error| format!("Could not load Whisper tokenizer: {error}"))?;
-    let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(
-            std::slice::from_ref(&bundle.weights),
-            whisper::DTYPE,
-            &device,
-        )
-    }
-    .map_err(|error| format!("Could not load Whisper weights: {error}"))?;
+    let vb = model_var_builder(&bundle.weights, &device)?;
     let model = whisper::model::Whisper::load(&vb, config.clone())
         .map_err(|error| format!("Could not initialize Whisper: {error}"))?;
     log_job(
@@ -138,7 +184,13 @@ pub fn transcribe(
         Some(code) => Some(token_id(&tokenizer, &format!("<|{code}|>"))?),
         None => Some(detect_language(model.clone(), &tokenizer, &first_mel)?),
     };
-    let mut decoder = Decoder::new(model, tokenizer, language_token, translate)?;
+    let mut decoder = Decoder::new(
+        model,
+        tokenizer,
+        language_token,
+        translate,
+        &generation_config.suppress_tokens,
+    )?;
 
     emit_stage(job_id, "Transcribing", 0);
     let total_samples: usize = regions.iter().map(|region| region.end - region.start).sum();
@@ -213,12 +265,34 @@ pub fn transcribe(
     Ok(segments)
 }
 
+fn model_var_builder<'a>(weights: &Path, device: &Device) -> Result<VarBuilder<'a>, String> {
+    if matches!(device, Device::Metal(_)) {
+        let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(weights) }
+            .map_err(|error| format!("Could not load Whisper weights: {error}"))?;
+        Ok(VarBuilder::from_backend(
+            Box::new(CpuCastingSafetensors { tensors }),
+            whisper::DTYPE,
+            device.clone(),
+        ))
+    } else {
+        unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                std::slice::from_ref(&weights),
+                whisper::DTYPE,
+                device,
+            )
+        }
+        .map_err(|error| format!("Could not load Whisper weights: {error}"))
+    }
+}
+
 impl Decoder {
     fn new(
         model: whisper::model::Whisper,
         tokenizer: Tokenizer,
         language_token: Option<u32>,
         translate: bool,
+        generation_suppress_tokens: &[u32],
     ) -> Result<Self, String> {
         let no_timestamps_token = token_id(&tokenizer, whisper::NO_TIMESTAMPS_TOKEN)?;
         let no_speech_token = whisper::NO_SPEECH_TOKENS
@@ -231,7 +305,15 @@ impl Decoder {
                 *entry = true;
             }
         }
-        suppress_tokens[no_timestamps_token as usize] = true;
+        for &token in generation_suppress_tokens {
+            if let Some(entry) = suppress_tokens.get_mut(token as usize) {
+                *entry = true;
+            }
+        }
+        let no_timestamps_entry = suppress_tokens
+            .get_mut(no_timestamps_token as usize)
+            .ok_or("Whisper no-timestamps token is outside the model vocabulary")?;
+        *no_timestamps_entry = true;
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -271,6 +353,7 @@ impl Decoder {
             .encoder
             .forward(mel, true)
             .map_err(candle_error)?;
+        log_tensor_stats(job_id, "encoder output", &audio_features)?;
         log_job(
             job_id,
             &format!("encoder finished in {:.2?}", encoder_started.elapsed()),
@@ -294,6 +377,7 @@ impl Decoder {
             .decoder
             .forward(&prefix_tensor, &audio_features, true)
             .map_err(candle_error)?;
+        log_tensor_stats(job_id, "first decoder output", &ys)?;
         let no_speech_logits = self
             .model
             .decoder
@@ -305,8 +389,9 @@ impl Decoder {
             .and_then(|tensor| tensor.i(self.no_speech_token as usize))
             .and_then(|tensor| tensor.to_scalar::<f32>())
             .map_err(candle_error)? as f64;
-        let logits =
-            self.apply_timestamp_rules(last_logits(&self.model, &ys)?, &prefix, prefix_len)?;
+        let first_logits = last_logits(&self.model, &ys)?;
+        log_tensor_stats(job_id, "first decoder logits", &first_logits)?;
+        let logits = self.apply_timestamp_rules(first_logits, &prefix, prefix_len)?;
         let mut beams = expand_beam(
             Beam {
                 model: self.model.clone(),
@@ -778,6 +863,35 @@ fn log_job(job_id: &str, message: &str) {
     }
 }
 
+fn log_tensor_stats(job_id: &str, name: &str, tensor: &Tensor) -> Result<(), String> {
+    if std::env::var_os("REASPEECH_DEBUG_TENSORS").is_none() {
+        return Ok(());
+    }
+    let values = tensor
+        .flatten_all()
+        .and_then(|tensor| tensor.to_vec1::<f32>())
+        .map_err(candle_error)?;
+    let finite = values.iter().filter(|value| value.is_finite()).count();
+    let min = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold(f32::INFINITY, f32::min);
+    let max = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold(f32::NEG_INFINITY, f32::max);
+    log_job(
+        job_id,
+        &format!(
+            "{name}: {finite}/{} finite, range {min:.4}..{max:.4}",
+            values.len()
+        ),
+    );
+    Ok(())
+}
+
 fn token_id(tokenizer: &Tokenizer, token: &str) -> Result<u32, String> {
     tokenizer
         .token_to_id(token)
@@ -803,6 +917,14 @@ fn candle_error(error: candle_core::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_suppressed_tokens_from_generation_config() {
+        let config: GenerationConfig =
+            serde_json::from_str(r#"{"suppress_tokens":[1,2,50360]}"#).unwrap();
+
+        assert_eq!(config.suppress_tokens, [1, 2, 50360]);
+    }
 
     #[test]
     fn groups_short_vad_islands_into_one_context_window() {
@@ -844,32 +966,44 @@ mod tests {
         assert_eq!(group_speech_regions(regions).len(), 2);
     }
 
-    #[cfg(feature = "metal")]
     #[test]
-    #[ignore = "requires a Metal GPU and downloaded Whisper model"]
-    fn metal_whisper_smoke_test() {
+    #[ignore = "requires a downloaded Whisper model"]
+    fn whisper_smoke_test() {
         let directory = std::env::var_os("REASPEECH_TEST_MODEL_DIR")
             .map(std::path::PathBuf::from)
             .expect("set REASPEECH_TEST_MODEL_DIR to a downloaded Whisper model directory");
         let bundle = ModelBundle {
             config: directory.join("config.json"),
+            generation_config: directory.join("generation_config.json"),
             tokenizer: directory.join("tokenizer.json"),
             weights: directory.join("model.safetensors"),
             mel_filters_80: directory.join("melfilters.bytes"),
             mel_filters_128: directory.join("melfilters128.bytes"),
         };
         let context = WorkerContext::default();
-        let silence = vec![0.0; SAMPLE_RATE];
+        let pcm = match std::env::var("REASPEECH_TEST_AUDIO") {
+            Ok(path) => crate::transcription::audio::decode_audio_16khz_mono(
+                "metal-smoke-test",
+                &path,
+                &context,
+            )
+            .unwrap(),
+            Err(_) => vec![0.0; SAMPLE_RATE],
+        };
+        let vad_model = std::env::var_os("REASPEECH_TEST_VAD_MODEL").map(std::path::PathBuf::from);
 
-        transcribe(
+        let segments = transcribe(
             "metal-smoke-test",
-            &silence,
+            &pcm,
             &bundle,
-            None,
+            vad_model.as_deref(),
             Some("en"),
             false,
             &context,
         )
         .unwrap();
+        for segment in segments {
+            eprintln!("{}-{}: {}", segment.start_ms, segment.end_ms, segment.text);
+        }
     }
 }

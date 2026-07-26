@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 pub struct ModelBundle {
     pub config: PathBuf,
+    pub generation_config: PathBuf,
     pub tokenizer: PathBuf,
     pub weights: PathBuf,
     pub mel_filters_80: PathBuf,
@@ -36,6 +37,7 @@ pub fn ensure_model(
         )
     };
     let config = fetch("config.json", "model configuration")?;
+    let generation_config = fetch("generation_config.json", "generation configuration")?;
     let tokenizer = fetch("tokenizer.json", "tokenizer")?;
     let weights = fetch("model.safetensors", "model weights")?;
     let mel_filters_80 = ensure_download(
@@ -54,6 +56,7 @@ pub fn ensure_model(
     )?;
     Ok(ModelBundle {
         config,
+        generation_config,
         tokenizer,
         weights,
         mel_filters_80,

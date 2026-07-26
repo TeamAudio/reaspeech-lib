@@ -28,6 +28,18 @@ fn context() -> &'static WorkerContext {
     CONTEXT.get_or_init(Default::default)
 }
 
+fn validate_options(model_name: &str, translate: bool) -> Result<(), String> {
+    if !["small", "medium", "large-v3", "large-v3-turbo"].contains(&model_name) {
+        return Err("model must be small, medium, large-v3, or large-v3-turbo".into());
+    }
+    if translate && model_name == "large-v3-turbo" {
+        return Err(
+            "large-v3-turbo is not trained for translation; use small, medium, or large-v3".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn push_event(job_id: &str, event: Value) {
     let serialized = serde_json::to_string(&event).unwrap_or_else(|error| {
         format!(r#"{{"type":"error","error":"Could not serialize event: {error}"}}"#)
@@ -50,9 +62,7 @@ fn start(
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
     }
-    if !["small", "medium", "large-v3", "large-v3-turbo"].contains(&model_name) {
-        return Err("model must be small, medium, large-v3, or large-v3-turbo".into());
-    }
+    validate_options(model_name, translate)?;
 
     let job_id = format!("reaspeech-{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     state()
@@ -219,7 +229,7 @@ pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{poll, push_event, state};
+    use super::{poll, push_event, state, validate_options};
     use serde_json::json;
     use std::collections::VecDeque;
 
@@ -237,5 +247,15 @@ mod tests {
         assert_eq!(poll(job_id), r#"{"sequence":1}"#);
         assert_eq!(poll(job_id), r#"{"sequence":2}"#);
         assert_eq!(poll(job_id), "");
+    }
+
+    #[test]
+    fn turbo_is_rejected_for_translation() {
+        assert!(validate_options("large-v3-turbo", false).is_ok());
+        assert_eq!(
+            validate_options("large-v3-turbo", true).unwrap_err(),
+            "large-v3-turbo is not trained for translation; use small, medium, or large-v3"
+        );
+        assert!(validate_options("large-v3", true).is_ok());
     }
 }

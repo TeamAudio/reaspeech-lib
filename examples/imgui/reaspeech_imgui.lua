@@ -8,6 +8,7 @@
 
 local TITLE = "ReaSpeech - Selected Media Items"
 local MODELS = {"small", "medium", "large-v3", "large-v3-turbo"}
+local TURBO_INDEX = 4
 
 if not reaper.ImGui_CreateContext then
   reaper.MB("This example requires ReaImGui. Install it with ReaPack and try again.", TITLE, 0)
@@ -316,6 +317,10 @@ local function render_options()
     for index, model in ipairs(MODELS) do
       if reaper.ImGui_Selectable(ctx, model, index == state.model_index) then
         state.model_index = index
+        if index == TURBO_INDEX and state.translate then
+          state.translate = false
+          state.status = "Translation disabled: large-v3-turbo only supports transcription."
+        end
       end
     end
     reaper.ImGui_EndCombo(ctx)
@@ -327,7 +332,14 @@ local function render_options()
   if reaper.ImGui_IsItemHovered(ctx) then
     reaper.ImGui_SetTooltip(ctx, "Leave empty to detect the language automatically.")
   end
-  changed, state.translate = reaper.ImGui_Checkbox(ctx, "Translate to English", state.translate)
+  local turbo_selected = state.model_index == TURBO_INDEX
+  if turbo_selected then reaper.ImGui_BeginDisabled(ctx) end
+  changed, state.translate = reaper.ImGui_Checkbox(
+    ctx,
+    "Translate to English",
+    state.translate
+  )
+  if turbo_selected then reaper.ImGui_EndDisabled(ctx) end
   reaper.ImGui_SameLine(ctx)
   changed, state.vad = reaper.ImGui_Checkbox(ctx, "Voice activity detection", state.vad)
 end

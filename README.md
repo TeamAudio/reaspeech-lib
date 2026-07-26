@@ -12,7 +12,9 @@ accepted = reaper.ReaSpeech_Cancel(job_id)
 ```
 
 `model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`. Use an empty
-language string for automatic language detection. `Poll` returns one queued
+language string for automatic language detection. `large-v3-turbo` is
+transcription-only; select `small`, `medium`, or `large-v3` when `translate` is
+enabled. `Poll` returns one queued
 event at a time and returns `""` when no event is ready. Event types are
 `started`, `progress`, `completed`, `cancelled`, and `error`. A completed event
 contains the transcript segments:

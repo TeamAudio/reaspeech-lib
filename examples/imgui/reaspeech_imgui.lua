@@ -9,6 +9,17 @@
 local TITLE = "ReaSpeech - Selected Media Items"
 local MODELS = {"small", "medium", "large-v3", "large-v3-turbo"}
 local TURBO_INDEX = 4
+local LANGUAGES = {
+  "", "en", "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo",
+  "br", "bs", "ca", "cs", "cy", "da", "de", "el", "es", "et", "eu", "fa",
+  "fi", "fo", "fr", "gl", "gu", "ha", "haw", "he", "hi", "hr", "ht", "hu",
+  "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "km", "kn", "ko", "la",
+  "lb", "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms",
+  "mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro",
+  "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv",
+  "sw", "ta", "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz",
+  "vi", "yi", "yo", "zh",
+}
 
 if not reaper.ImGui_CreateContext then
   reaper.MB("This example requires ReaImGui. Install it with ReaPack and try again.", TITLE, 0)
@@ -189,7 +200,7 @@ end
 local ctx = reaper.ImGui_CreateContext(TITLE)
 local state = {
   model_index = 1,
-  language = "",
+  language_index = 1,
   translate = false,
   vad = true,
   queue = {},
@@ -217,7 +228,7 @@ local function start_next_job()
   state.job_id = reaper.ReaSpeech_Start(
     state.current.path,
     MODELS[state.model_index],
-    state.language,
+    LANGUAGES[state.language_index],
     state.translate,
     state.vad
   )
@@ -348,11 +359,19 @@ local function render_options()
   end
 
   reaper.ImGui_SetNextItemWidth(ctx, 180)
-  local changed
-  changed, state.language = reaper.ImGui_InputText(ctx, "Language", state.language)
-  if reaper.ImGui_IsItemHovered(ctx) then
-    reaper.ImGui_SetTooltip(ctx, "Leave empty to detect the language automatically.")
+  local language_preview = state.language_index == 1
+      and "auto"
+      or LANGUAGES[state.language_index]
+  if reaper.ImGui_BeginCombo(ctx, "Language", language_preview) then
+    for index, language in ipairs(LANGUAGES) do
+      local label = index == 1 and "auto" or language
+      if reaper.ImGui_Selectable(ctx, label, index == state.language_index) then
+        state.language_index = index
+      end
+    end
+    reaper.ImGui_EndCombo(ctx)
   end
+  local changed
   local turbo_selected = state.model_index == TURBO_INDEX
   if turbo_selected then reaper.ImGui_BeginDisabled(ctx) end
   changed, state.translate = reaper.ImGui_Checkbox(

@@ -406,13 +406,16 @@ local function render_results()
         reaper.ImGui_TextDisabled(ctx, "No speech detected.")
       else
         for segment_index, segment in ipairs(result.segments) do
-          local seconds = (segment.startMs or 0) / 1000
+          local start_seconds = (segment.startMs or 0) / 1000
+          local end_seconds = (segment.endMs or 0) / 1000
           local score = segment.confidence ~= nil
               and ("  [score: %.2f]"):format(segment.confidence)
               or ""
-          local label = ("%02d:%05.2f  %s%s"):format(
-            math.floor(seconds / 60),
-            seconds % 60,
+          local label = ("%02d:%05.2f - %02d:%05.2f  %s%s"):format(
+            math.floor(start_seconds / 60),
+            start_seconds % 60,
+            math.floor(end_seconds / 60),
+            end_seconds % 60,
             (segment.text or ""):match("^%s*(.-)%s*$"),
             score
           )

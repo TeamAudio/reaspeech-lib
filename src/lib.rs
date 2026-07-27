@@ -1,5 +1,6 @@
 mod api;
 mod common;
+mod config;
 mod transcription;
 
 use reaper_low::PluginContext;

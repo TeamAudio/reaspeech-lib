@@ -1,5 +1,6 @@
 use super::emit_stage;
 use crate::common::WorkerContext;
+use crate::config;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -18,12 +19,10 @@ pub fn ensure_model(
     model_name: &str,
     context: &WorkerContext,
 ) -> Result<ModelBundle, String> {
-    const MODELS: &[&str] = &["small", "medium", "large-v3", "large-v3-turbo"];
-    if !MODELS.contains(&model_name) {
+    if !config::WHISPER_MODELS.contains(&model_name) {
         return Err("Unknown Whisper model".into());
     }
 
-    let model_id = format!("openai/whisper-{model_name}");
     let directory = models_directory()?.join(format!("candle-whisper-{model_name}"));
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Could not create model directory: {error}"))?;
@@ -32,7 +31,7 @@ pub fn ensure_model(
             job_id,
             context,
             directory.join(filename),
-            &format!("https://huggingface.co/{model_id}/resolve/main/{filename}"),
+            &config::whisper_model_url(model_name, filename),
             description,
         )
     };
@@ -44,14 +43,14 @@ pub fn ensure_model(
         job_id,
         context,
         directory.join("melfilters.bytes"),
-        "https://raw.githubusercontent.com/huggingface/candle/main/candle-examples/examples/whisper/melfilters.bytes",
+        config::MEL_FILTERS_80_URL,
         "mel filters",
     )?;
     let mel_filters_128 = ensure_download(
         job_id,
         context,
         directory.join("melfilters128.bytes"),
-        "https://raw.githubusercontent.com/huggingface/candle/main/candle-examples/examples/whisper/melfilters128.bytes",
+        config::MEL_FILTERS_128_URL,
         "128-bin mel filters",
     )?;
     Ok(ModelBundle {
@@ -68,8 +67,8 @@ pub fn ensure_vad_model(job_id: &str, context: &WorkerContext) -> Result<PathBuf
     ensure_download(
         job_id,
         context,
-        models_directory()?.join("silero-vad-v6.2.1.onnx"),
-        "https://github.com/snakers4/silero-vad/raw/v6.2.1/src/silero_vad/data/silero_vad.onnx",
+        models_directory()?.join(config::VAD_MODEL_FILENAME),
+        config::VAD_MODEL_URL,
         "Silero VAD model",
     )
 }

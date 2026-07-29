@@ -118,24 +118,28 @@ jobs:
           - name: Windows (CUDA 13, default)
             os: windows-latest
             cuda-version: 13.1.0
+            compute-cap: '75'
             artifact: reaspeech-windows-x86_64-cuda
             source: target/release/reaper_reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Windows (CUDA 12)
             os: windows-latest
             cuda-version: 12.9.1
+            compute-cap: '61'
             artifact: reaspeech-windows-x86_64-cuda12
             source: target/release/reaper_reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Linux (CUDA 13, default)
             os: ubuntu-24.04
             cuda-version: 13.1.0
+            compute-cap: '75'
             artifact: reaspeech-linux-x86_64-cuda
             source: target/release/libreaper_reaspeech.so
             output: reaper_reaspeech.so
           - name: Linux (CUDA 12)
             os: ubuntu-24.04
             cuda-version: 12.9.1
+            compute-cap: '61'
             artifact: reaspeech-linux-x86_64-cuda12
             source: target/release/libreaper_reaspeech.so
             output: reaper_reaspeech.so
@@ -175,6 +179,8 @@ jobs:
           key: ${{ matrix.artifact }}-${{ matrix.cuda-version }}
 
       - name: Build
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.compute-cap }}
         run: cargo build --release --locked --features cuda
 
       - name: Stage extension

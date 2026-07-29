@@ -148,8 +148,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda-version }}
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas"]'
+          method: local
           log-file-suffix: windows-${{ matrix.cuda-version }}.txt
 
       - name: Install CUDA ${{ matrix.cuda-version }} (Linux)

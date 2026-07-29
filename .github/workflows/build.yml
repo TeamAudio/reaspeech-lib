@@ -148,12 +148,23 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install CUDA ${{ matrix.cuda-version }}
-        uses: Jimver/cuda-toolkit@v0.2.30
+      - name: Install CUDA ${{ matrix.cuda-version }} (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda-version }}
           method: network
           sub-packages: '["nvcc", "cudart", "cublas"]'
+          log-file-suffix: windows-${{ matrix.cuda-version }}.txt
+
+      - name: Install CUDA ${{ matrix.cuda-version }} (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda-version }}
+          method: network
+          sub-packages: '["nvcc", "cudart-dev", "libraries-dev"]'
+          log-file-suffix: linux-${{ matrix.cuda-version }}.txt
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

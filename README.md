@@ -98,6 +98,20 @@ patch to Candle's Metal kernels that omits unused BF16 GEMV variants on older
 Metal language targets, allowing the F32 Whisper implementation to use Metal
 on M1 and later Macs.
 
+## Continuous integration builds
+
+The `Build` GitHub Actions workflow builds and uploads ready-to-install
+extensions for:
+
+- Windows x86_64 and Linux x86_64 using the CPU backend
+- macOS as a universal arm64/x86_64 binary using Metal
+- Windows x86_64 and Linux x86_64 using CUDA 12 or CUDA 13
+
+CUDA 13 is the default CUDA build. Its artifact names end in `-cuda`; CUDA 12
+artifacts end in `-cuda12`. Every artifact contains the extension under the
+filename REAPER expects in `UserPlugins`, ready for future publication through
+the TeamAudio ReaPack repository.
+
 ## Design
 
 Every request runs on a Rust worker thread. The worker only writes serialized

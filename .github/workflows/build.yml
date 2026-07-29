@@ -107,14 +107,14 @@ jobs:
       matrix:
         include:
           - name: Windows (CUDA 13, default)
-            os: windows-latest
+            os: windows-2022
             cuda-version: 13.1.0
             compute-cap: '75'
             artifact: reaspeech-windows-x86_64-cuda
             source: target/release/reaper_reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Windows (CUDA 12)
-            os: windows-latest
+            os: windows-2022
             cuda-version: 12.9.1
             compute-cap: '61'
             artifact: reaspeech-windows-x86_64-cuda12

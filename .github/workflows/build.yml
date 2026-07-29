@@ -115,7 +115,7 @@ jobs:
             output: reaper_reaspeech.dll
           - name: Windows (CUDA 12)
             os: windows-2022
-            cuda-version: 12.9.1
+            cuda-version: 12.5.0
             compute-cap: '61'
             artifact: reaspeech-windows-x86_64-cuda12
             source: target/release/reaper_reaspeech.dll
@@ -129,7 +129,7 @@ jobs:
             output: reaper_reaspeech.so
           - name: Linux (CUDA 12)
             os: ubuntu-24.04
-            cuda-version: 12.9.1
+            cuda-version: 12.5.0
             compute-cap: '61'
             artifact: reaspeech-linux-x86_64-cuda12
             source: target/release/libreaper_reaspeech.so

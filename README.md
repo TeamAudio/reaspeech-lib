@@ -108,9 +108,10 @@ extensions for:
 - Windows x86_64 and Linux x86_64 using CUDA 12 or CUDA 13
 
 CUDA 13 is the default CUDA build. Its artifact names end in `-cuda`; CUDA 12
-artifacts end in `-cuda12`. Every artifact contains the extension under the
-filename REAPER expects in `UserPlugins`, ready for future publication through
-the TeamAudio ReaPack repository.
+artifacts end in `-cuda12` and use CUDA Toolkit 12.5 for compatibility with
+older NVIDIA drivers. Every artifact contains the extension under the filename
+REAPER expects in `UserPlugins`, ready for future publication through the
+TeamAudio ReaPack repository.
 
 An Intel macOS build is not currently produced because the pinned ONNX Runtime
 release does not provide prebuilt `x86_64-apple-darwin` binaries.

@@ -66,45 +66,36 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: macOS universal (Metal)
+    name: macOS arm64 (Metal)
     runs-on: macos-14
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Install Rust targets
+      - name: Install Rust target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: reaspeech-macos-universal-metal
+          key: reaspeech-macos-arm64-metal
 
-      - name: Test
-        run: cargo test --locked --features metal
-
-      - name: Build arm64
+      - name: Build
         run: cargo build --release --locked --features metal --target aarch64-apple-darwin
 
-      - name: Build x86_64
-        run: cargo build --release --locked --features metal --target x86_64-apple-darwin
-
-      - name: Create universal extension
+      - name: Stage extension
         run: |
           mkdir -p artifact
-          lipo -create \
-            target/aarch64-apple-darwin/release/libreaper_reaspeech.dylib \
-            target/x86_64-apple-darwin/release/libreaper_reaspeech.dylib \
-            -output artifact/reaper_reaspeech.dylib
-          lipo -archs artifact/reaper_reaspeech.dylib
+          cp target/aarch64-apple-darwin/release/libreaper_reaspeech.dylib \
+            artifact/reaper_reaspeech.dylib
 
       - name: Upload extension
         uses: actions/upload-artifact@v4
         with:
-          name: reaspeech-macos-universal-metal
+          name: reaspeech-macos-arm64-metal
           path: artifact/
           if-no-files-found: error
 

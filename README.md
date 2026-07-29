@@ -104,13 +104,16 @@ The `Build` GitHub Actions workflow builds and uploads ready-to-install
 extensions for:
 
 - Windows x86_64 and Linux x86_64 using the CPU backend
-- macOS as a universal arm64/x86_64 binary using Metal
+- macOS arm64 using Metal
 - Windows x86_64 and Linux x86_64 using CUDA 12 or CUDA 13
 
 CUDA 13 is the default CUDA build. Its artifact names end in `-cuda`; CUDA 12
 artifacts end in `-cuda12`. Every artifact contains the extension under the
 filename REAPER expects in `UserPlugins`, ready for future publication through
 the TeamAudio ReaPack repository.
+
+An Intel macOS build is not currently produced because the pinned ONNX Runtime
+release does not provide prebuilt `x86_64-apple-darwin` binaries.
 
 ## Design
 

@@ -34,6 +34,8 @@ struct JobOptions {
     words: bool,
     #[serde(default)]
     hotwords: Option<String>,
+    #[serde(default, rename = "beamSize")]
+    beam_size: Option<usize>,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -44,7 +46,11 @@ fn context() -> &'static WorkerContext {
     CONTEXT.get_or_init(Default::default)
 }
 
-fn validate_options(model_name: &str, translate: bool) -> Result<(), String> {
+fn validate_options(
+    model_name: &str,
+    translate: bool,
+    beam_size: Option<usize>,
+) -> Result<(), String> {
     if !["small", "medium", "large-v3", "large-v3-turbo"].contains(&model_name) {
         return Err("model must be small, medium, large-v3, or large-v3-turbo".into());
     }
@@ -52,6 +58,9 @@ fn validate_options(model_name: &str, translate: bool) -> Result<(), String> {
         return Err(
             "large-v3-turbo is not trained for translation; use small, medium, or large-v3".into(),
         );
+    }
+    if beam_size.is_some_and(|size| !(1..=5).contains(&size)) {
+        return Err("beamSize must be between 1 and 5".into());
     }
     Ok(())
 }
@@ -72,7 +81,7 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
     }
-    validate_options(&options.model, options.translate)?;
+    validate_options(&options.model, options.translate, options.beam_size)?;
 
     let job_id = format!("reaspeech-{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     state()
@@ -91,6 +100,7 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
         vad: options.vad,
         words: options.words,
         hotwords: options.hotwords.filter(|value| !value.trim().is_empty()),
+        beam_size: options.beam_size,
     };
     let worker_context = context().clone();
     thread::spawn(move || {
@@ -215,6 +225,7 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
                 vad,
                 words,
                 hotwords: Some(hotwords.to_owned()),
+                beam_size: None,
             },
         )
     })();
@@ -319,12 +330,12 @@ mod tests {
 
     #[test]
     fn turbo_is_rejected_for_translation() {
-        assert!(validate_options("large-v3-turbo", false).is_ok());
+        assert!(validate_options("large-v3-turbo", false, None).is_ok());
         assert_eq!(
-            validate_options("large-v3-turbo", true).unwrap_err(),
+            validate_options("large-v3-turbo", true, None).unwrap_err(),
             "large-v3-turbo is not trained for translation; use small, medium, or large-v3"
         );
-        assert!(validate_options("large-v3", true).is_ok());
+        assert!(validate_options("large-v3", true, None).is_ok());
     }
 
     #[test]
@@ -354,7 +365,24 @@ mod tests {
                 vad: false,
                 words: false,
                 hotwords: None,
+                beam_size: None,
             }
+        );
+    }
+
+    #[test]
+    fn job_options_accept_and_validate_beam_size() {
+        let options: JobOptions =
+            serde_json::from_str(r#"{"model":"small","beamSize":3}"#).unwrap();
+        assert_eq!(options.beam_size, Some(3));
+        assert!(validate_options(&options.model, options.translate, options.beam_size).is_ok());
+        assert_eq!(
+            validate_options("small", false, Some(0)).unwrap_err(),
+            "beamSize must be between 1 and 5"
+        );
+        assert_eq!(
+            validate_options("small", false, Some(6)).unwrap_err(),
+            "beamSize must be between 1 and 5"
         );
     }
 

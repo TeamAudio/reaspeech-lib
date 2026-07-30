@@ -141,6 +141,7 @@ pub fn transcribe<F>(
     translate: bool,
     words: bool,
     hotwords: Option<&str>,
+    beam_size: Option<usize>,
     context: &WorkerContext,
     mut on_segment: F,
 ) -> Result<(), String>
@@ -160,12 +161,13 @@ where
     )
     .map_err(|error| format!("Invalid Whisper generation configuration: {error}"))?;
     let device = inference_device()?;
+    let beam_size = beam_size.unwrap_or(DEFAULT_BEAM_SIZE);
     log_job(
         job_id,
         &format!(
             "using {} with beam size {}",
             device_name(&device),
-            configured_beam_size()
+            beam_size
         ),
     );
     let tokenizer = Tokenizer::from_file(&bundle.tokenizer)
@@ -218,6 +220,7 @@ where
         translate,
         &generation_config.suppress_tokens,
         hotwords,
+        beam_size,
     )?;
 
     emit_stage(job_id, "Transcribing", 0);
@@ -335,6 +338,7 @@ impl Decoder {
         translate: bool,
         generation_suppress_tokens: &[u32],
         hotwords: Option<&str>,
+        beam_size: usize,
     ) -> Result<Self, String> {
         let no_timestamps_token = token_id(&tokenizer, whisper::NO_TIMESTAMPS_TOKEN)?;
         let no_speech_token = whisper::NO_SPEECH_TOKENS
@@ -371,7 +375,7 @@ impl Decoder {
             suppress_tokens,
             language_token,
             translate,
-            beam_size: configured_beam_size(),
+            beam_size,
         })
     }
 
@@ -997,14 +1001,6 @@ fn inference_device() -> Result<Device, String> {
     Ok(Device::Cpu)
 }
 
-fn configured_beam_size() -> usize {
-    std::env::var("REASPEECH_BEAM_SIZE")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|size: &usize| (1..=5).contains(size))
-        .unwrap_or(DEFAULT_BEAM_SIZE)
-}
-
 fn device_name(device: &Device) -> &'static str {
     match device {
         Device::Cpu => "CPU",
@@ -1239,6 +1235,7 @@ mod tests {
             Some("en"),
             false,
             false,
+            None,
             None,
             &context,
             |segment| {

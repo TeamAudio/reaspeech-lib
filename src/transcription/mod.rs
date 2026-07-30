@@ -20,6 +20,7 @@ pub struct Request {
     pub vad: bool,
     pub words: bool,
     pub hotwords: Option<String>,
+    pub beam_size: Option<usize>,
 }
 
 #[derive(Clone, Serialize)]
@@ -66,6 +67,7 @@ where
         request.translate,
         request.words,
         request.hotwords.as_deref(),
+        request.beam_size,
         context,
         |segment| {
             on_segment(&Segment {

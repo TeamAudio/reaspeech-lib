@@ -45,15 +45,19 @@ For named options and future extensibility, use `ReaSpeech_StartEx`. Its
 | `vad` | Boolean | No | `false` |
 | `words` | Boolean | No | `false` |
 | `hotwords` | String | No | No hotwords |
+| `beamSize` | Integer | No | `1` |
 
 Unknown fields are rejected so that misspelled option names do not silently
-change transcription behavior. For example:
+change transcription behavior. `beamSize` must be between `1` and `5`; larger
+values may improve decoding quality at the cost of additional processing. For
+example:
 
 ```lua
 local options = [[{
   "model": "small",
   "language": "en",
   "vad": true,
+  "beamSize": 3,
   "hotwords": "ReaSpeech, REAPER, Cockos"
 }]]
 local job_id = reaper.ReaSpeech_StartEx(path, options)

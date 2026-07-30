@@ -20,6 +20,7 @@ const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE / 4;
 const MIN_SILENCE_SAMPLES: usize = SAMPLE_RATE / 10;
 const SPEECH_PAD_SAMPLES: usize = SAMPLE_RATE * 30 / 1000;
 const DEFAULT_BEAM_SIZE: usize = 1;
+const SOT_PREV_TOKEN: &str = "<|startofprev|>";
 
 pub struct TranscriptSegment {
     pub start_ms: i64,
@@ -61,6 +62,8 @@ struct Decoder {
     eot_token: u32,
     no_speech_token: u32,
     no_timestamps_token: u32,
+    sot_prev_token: u32,
+    hotword_tokens: Vec<u32>,
     language_token: Option<u32>,
     translate: bool,
     beam_size: usize,
@@ -137,6 +140,7 @@ pub fn transcribe<F>(
     language: Option<&str>,
     translate: bool,
     words: bool,
+    hotwords: Option<&str>,
     context: &WorkerContext,
     mut on_segment: F,
 ) -> Result<(), String>
@@ -213,6 +217,7 @@ where
         language_token,
         translate,
         &generation_config.suppress_tokens,
+        hotwords,
     )?;
 
     emit_stage(job_id, "Transcribing", 0);
@@ -329,6 +334,7 @@ impl Decoder {
         language_token: Option<u32>,
         translate: bool,
         generation_suppress_tokens: &[u32],
+        hotwords: Option<&str>,
     ) -> Result<Self, String> {
         let no_timestamps_token = token_id(&tokenizer, whisper::NO_TIMESTAMPS_TOKEN)?;
         let no_speech_token = whisper::NO_SPEECH_TOKENS
@@ -350,6 +356,17 @@ impl Decoder {
             .get_mut(no_timestamps_token as usize)
             .ok_or("Whisper no-timestamps token is outside the model vocabulary")?;
         *no_timestamps_entry = true;
+        let hotword_limit = model.config.max_target_positions / 2 - 1;
+        let hotword_tokens = match hotwords.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(hotwords) => truncate_hotword_tokens(
+                tokenizer
+                    .encode(format!(" {hotwords}"), false)
+                    .map_err(|error| format!("Could not tokenize hotwords: {error}"))?
+                    .get_ids(),
+                hotword_limit,
+            ),
+            None => Vec::new(),
+        };
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -358,6 +375,8 @@ impl Decoder {
             eot_token: token_id(&tokenizer, whisper::EOT_TOKEN)?,
             no_speech_token,
             no_timestamps_token,
+            sot_prev_token: token_id(&tokenizer, SOT_PREV_TOKEN)?,
+            hotword_tokens,
             tokenizer,
             suppress_tokens,
             language_token,
@@ -395,7 +414,13 @@ impl Decoder {
             job_id,
             &format!("encoder finished in {:.2?}", encoder_started.elapsed()),
         );
-        let mut prefix = vec![self.sot_token];
+        let mut prefix = Vec::new();
+        if !self.hotword_tokens.is_empty() {
+            prefix.push(self.sot_prev_token);
+            prefix.extend_from_slice(&self.hotword_tokens);
+        }
+        let sot_position = prefix.len();
+        prefix.push(self.sot_token);
         if let Some(language) = self.language_token {
             prefix.push(language);
         }
@@ -418,7 +443,10 @@ impl Decoder {
         let no_speech_logits = self
             .model
             .decoder
-            .final_linear(&ys.i(..1).map_err(candle_error)?)
+            .final_linear(
+                &ys.i((.., sot_position..sot_position + 1))
+                    .map_err(candle_error)?,
+            )
             .and_then(|tensor| tensor.i(0))
             .and_then(|tensor| tensor.i(0))
             .map_err(candle_error)?;
@@ -444,8 +472,14 @@ impl Decoder {
         )?;
 
         let audio_seconds = audio_samples as f64 / SAMPLE_RATE as f64;
+        let available_steps = self
+            .model
+            .config
+            .max_target_positions
+            .saturating_sub(prefix_len);
         let max_steps = ((audio_seconds * 8.0).ceil() as usize + 16)
-            .clamp(24, self.model.config.max_target_positions / 2);
+            .clamp(24, self.model.config.max_target_positions / 2)
+            .min(available_steps);
         for _ in 1..max_steps {
             ensure_not_cancelled(job_id, cancellation)?;
             if beams.iter().all(|beam| beam.finished) {
@@ -1022,6 +1056,10 @@ fn token_id(tokenizer: &Tokenizer, token: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("Whisper tokenizer has no {token} token"))
 }
 
+fn truncate_hotword_tokens(tokens: &[u32], limit: usize) -> Vec<u32> {
+    tokens.iter().copied().take(limit).collect()
+}
+
 fn ensure_not_cancelled(job_id: &str, cancellation: &Cancellation) -> Result<(), String> {
     if cancellation.is_cancelled(job_id) {
         Err("cancelled".into())
@@ -1056,6 +1094,17 @@ mod tests {
 
         assert!((confidence - 0.6).abs() < f32::EPSILON);
         assert_eq!(confidence_from_log_probs(&[]), 0.0);
+    }
+
+    #[test]
+    fn hotwords_are_limited_to_half_the_decoder_context_less_one() {
+        let tokens: Vec<u32> = (0..300).collect();
+
+        let truncated = truncate_hotword_tokens(&tokens, 223);
+
+        assert_eq!(truncated.len(), 223);
+        assert_eq!(truncated[0], 0);
+        assert_eq!(truncated[222], 222);
     }
 
     #[test]
@@ -1133,6 +1182,7 @@ mod tests {
             Some("en"),
             false,
             false,
+            None,
             &context,
             |segment| {
                 segments.push((segment.start_ms, segment.end_ms, segment.text.clone()));

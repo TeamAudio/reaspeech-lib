@@ -24,8 +24,8 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
             api::start_native as *mut _,
             api::start_vararg,
             "const char*",
-            "const char*,const char*,const char*,bool*,bool*,bool*",
-            "audio_path,model,languageOptional,translateOptional,vadOptional,wordsOptional",
+            "const char*,const char*,const char*,bool*,bool*,bool*,const char*",
+            "audio_path,model,languageOptional,translateOptional,vadOptional,wordsOptional,hotwordsOptional",
             "Starts transcription and returns a job ID. An error begins with ERROR:.",
         )?;
         session.plugin_register_add_api_and_def(

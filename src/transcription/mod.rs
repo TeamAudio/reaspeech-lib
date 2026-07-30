@@ -19,6 +19,7 @@ pub struct Request {
     pub translate: bool,
     pub vad: bool,
     pub words: bool,
+    pub hotwords: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -64,6 +65,7 @@ where
         request.language.as_deref(),
         request.translate,
         request.words,
+        request.hotwords.as_deref(),
         context,
         |segment| {
             on_segment(&Segment {

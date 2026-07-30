@@ -2,7 +2,7 @@
 local ok, audio_path = reaper.GetUserFileNameForRead("", "Choose audio", "")
 if not ok then return end
 
-local job_id = reaper.ReaSpeech_Start(audio_path, "small", "", false, true)
+local job_id = reaper.ReaSpeech_Start(audio_path, "small", "", false, true, false, "")
 if job_id:sub(1, 6) == "ERROR:" then
   reaper.ShowMessageBox(job_id, "ReaSpeech", 0)
   return
@@ -23,4 +23,3 @@ local function poll()
 end
 
 poll()
-

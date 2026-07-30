@@ -6,13 +6,25 @@ transcription engine to Lua/ReaScript without blocking REAPER's main thread.
 ## Lua API
 
 ```lua
-job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words)
+job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)
 event_json = reaper.ReaSpeech_Poll(job_id)
 accepted = reaper.ReaSpeech_Cancel(job_id)
 ```
 
 Only `audio_path` and `model` are required. `language` defaults to automatic
 language detection, while `translate`, `vad`, and `words` default to `false`.
+`hotwords` is an optional string of names, terminology, or phrases that should
+be favored during recognition. For example:
+
+```lua
+local hotwords = "ReaSpeech, REAPER, Cockos, spectral edit"
+local job_id = reaper.ReaSpeech_Start(path, "small", "en", false, true, false, hotwords)
+```
+
+Hotwords are hints rather than a restricted vocabulary or guaranteed output.
+They are applied to every audio window and truncated when they occupy more than
+half of Whisper's token context.
+
 `model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`.
 `large-v3-turbo` is transcription-only; select `small`, `medium`, or `large-v3`
 when `translate` is enabled. `Poll` returns one queued

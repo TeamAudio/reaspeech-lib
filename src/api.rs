@@ -58,6 +58,7 @@ fn start(
     translate: bool,
     vad: bool,
     words: bool,
+    hotwords: Option<&str>,
 ) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
@@ -82,6 +83,9 @@ fn start(
         translate,
         vad,
         words,
+        hotwords: hotwords
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned),
     };
     let worker_context = context().clone();
     thread::spawn(move || {
@@ -196,7 +200,16 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
         let translate = optional_bool_arg(args, 3);
         let vad = optional_bool_arg(args, 4);
         let words = optional_bool_arg(args, 5);
-        start(audio, model, Some(language), translate, vad, words)
+        let hotwords = string_arg(args, 6).unwrap_or("");
+        start(
+            audio,
+            model,
+            Some(language),
+            translate,
+            vad,
+            words,
+            Some(hotwords),
+        )
     })();
     match result {
         Ok(job_id) => return_string(job_id),
@@ -224,6 +237,7 @@ pub extern "C" fn start_native(
     translate: *const bool,
     vad: *const bool,
     words: *const bool,
+    hotwords: *const c_char,
 ) -> *const c_char {
     let args = [
         audio_path as *mut c_void,
@@ -232,6 +246,7 @@ pub extern "C" fn start_native(
         translate as *mut c_void,
         vad as *mut c_void,
         words as *mut c_void,
+        hotwords as *mut c_void,
     ];
     unsafe { start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char }
 }

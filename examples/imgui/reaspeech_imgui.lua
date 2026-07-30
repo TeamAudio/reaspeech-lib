@@ -203,6 +203,7 @@ local state = {
   language_index = 1,
   translate = false,
   vad = true,
+  hotwords = "",
   queue = {},
   current = nil,
   job_id = nil,
@@ -230,7 +231,9 @@ local function start_next_job()
     MODELS[state.model_index],
     LANGUAGES[state.language_index],
     state.translate,
-    state.vad
+    state.vad,
+    false,
+    state.hotwords
   )
   if state.job_id:sub(1, 6) == "ERROR:" then
     state.results[#state.results + 1] = {
@@ -382,6 +385,13 @@ local function render_options()
   if turbo_selected then reaper.ImGui_EndDisabled(ctx) end
   reaper.ImGui_SameLine(ctx)
   changed, state.vad = reaper.ImGui_Checkbox(ctx, "Voice activity detection", state.vad)
+  reaper.ImGui_Text(ctx, "Hotwords")
+  reaper.ImGui_SetNextItemWidth(ctx, -1)
+  changed, state.hotwords = reaper.ImGui_InputText(
+    ctx,
+    "##hotwords",
+    state.hotwords
+  )
 end
 
 local function render_results()

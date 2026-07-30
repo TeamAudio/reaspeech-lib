@@ -22,8 +22,7 @@ local job_id = reaper.ReaSpeech_Start(path, "small", "en", false, true, false, h
 ```
 
 Hotwords are hints rather than a restricted vocabulary or guaranteed output.
-They are applied to every audio window and truncated when they occupy more than
-half of Whisper's token context.
+Separate multiple entries with commas or newlines.
 
 `model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`.
 `large-v3-turbo` is transcription-only; select `small`, `medium`, or `large-v3`

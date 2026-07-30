@@ -20,7 +20,8 @@ const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE / 4;
 const MIN_SILENCE_SAMPLES: usize = SAMPLE_RATE / 10;
 const SPEECH_PAD_SAMPLES: usize = SAMPLE_RATE * 30 / 1000;
 const DEFAULT_BEAM_SIZE: usize = 1;
-const SOT_PREV_TOKEN: &str = "<|startofprev|>";
+const HOTWORD_LOGIT_BIAS: f32 = 2.0;
+const HOTWORD_MAX_LOGIT_GAP: f32 = 5.0;
 
 pub struct TranscriptSegment {
     pub start_ms: i64,
@@ -62,8 +63,7 @@ struct Decoder {
     eot_token: u32,
     no_speech_token: u32,
     no_timestamps_token: u32,
-    sot_prev_token: u32,
-    hotword_tokens: Vec<u32>,
+    hotword_token_sequences: Vec<Vec<u32>>,
     language_token: Option<u32>,
     translate: bool,
     beam_size: usize,
@@ -357,16 +357,7 @@ impl Decoder {
             .ok_or("Whisper no-timestamps token is outside the model vocabulary")?;
         *no_timestamps_entry = true;
         let hotword_limit = model.config.max_target_positions / 2 - 1;
-        let hotword_tokens = match hotwords.map(str::trim).filter(|value| !value.is_empty()) {
-            Some(hotwords) => truncate_hotword_tokens(
-                tokenizer
-                    .encode(format!(" {hotwords}"), false)
-                    .map_err(|error| format!("Could not tokenize hotwords: {error}"))?
-                    .get_ids(),
-                hotword_limit,
-            ),
-            None => Vec::new(),
-        };
+        let hotword_token_sequences = tokenize_hotwords(&tokenizer, hotwords, hotword_limit)?;
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -375,8 +366,7 @@ impl Decoder {
             eot_token: token_id(&tokenizer, whisper::EOT_TOKEN)?,
             no_speech_token,
             no_timestamps_token,
-            sot_prev_token: token_id(&tokenizer, SOT_PREV_TOKEN)?,
-            hotword_tokens,
+            hotword_token_sequences,
             tokenizer,
             suppress_tokens,
             language_token,
@@ -414,13 +404,8 @@ impl Decoder {
             job_id,
             &format!("encoder finished in {:.2?}", encoder_started.elapsed()),
         );
-        let mut prefix = Vec::new();
-        if !self.hotword_tokens.is_empty() {
-            prefix.push(self.sot_prev_token);
-            prefix.extend_from_slice(&self.hotword_tokens);
-        }
-        let sot_position = prefix.len();
-        prefix.push(self.sot_token);
+        let mut prefix = vec![self.sot_token];
+        let sot_position = 0;
         if let Some(language) = self.language_token {
             prefix.push(language);
         }
@@ -456,7 +441,8 @@ impl Decoder {
             .map_err(candle_error)? as f64;
         let first_logits = last_logits(&self.model, &ys)?;
         log_tensor_stats(job_id, "first decoder logits", &first_logits)?;
-        let logits = self.apply_timestamp_rules(first_logits, &prefix, prefix_len)?;
+        let logits = self.apply_hotword_bias(first_logits, &[])?;
+        let logits = self.apply_timestamp_rules(logits, &prefix, prefix_len)?;
         let mut beams = expand_beam(
             Beam {
                 model: self.model.clone(),
@@ -503,11 +489,11 @@ impl Decoder {
                     .decoder
                     .forward(&input, &audio_features, false)
                     .map_err(candle_error)?;
-                let logits = self.apply_timestamp_rules(
+                let logits = self.apply_hotword_bias(
                     last_logits(&beam.model, &ys)?,
-                    &beam.tokens,
-                    prefix_len,
+                    &beam.tokens[prefix_len..],
                 )?;
+                let logits = self.apply_timestamp_rules(logits, &beam.tokens, prefix_len)?;
                 candidates.extend(expand_beam(
                     beam,
                     logits,
@@ -554,6 +540,22 @@ impl Decoder {
             words,
         )?;
         Ok((pieces, no_speech))
+    }
+
+    fn apply_hotword_bias(&self, logits: Tensor, sampled: &[u32]) -> Result<Tensor, String> {
+        if self.hotword_token_sequences.is_empty() {
+            return Ok(logits);
+        }
+        let mut values = logits.to_vec1::<f32>().map_err(candle_error)?;
+        let best = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        for token in hotword_bias_candidates(&self.hotword_token_sequences, sampled) {
+            if let Some(value) = values.get_mut(token as usize) {
+                if value.is_finite() && *value >= best - HOTWORD_MAX_LOGIT_GAP {
+                    *value += HOTWORD_LOGIT_BIAS;
+                }
+            }
+        }
+        Tensor::new(values.as_slice(), logits.device()).map_err(candle_error)
     }
 
     fn apply_timestamp_rules(
@@ -1060,6 +1062,48 @@ fn truncate_hotword_tokens(tokens: &[u32], limit: usize) -> Vec<u32> {
     tokens.iter().copied().take(limit).collect()
 }
 
+fn tokenize_hotwords(
+    tokenizer: &Tokenizer,
+    hotwords: Option<&str>,
+    limit: usize,
+) -> Result<Vec<Vec<u32>>, String> {
+    let mut sequences = Vec::new();
+    for hotword in hotwords
+        .into_iter()
+        .flat_map(|value| value.split([',', '\n']))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let tokens = tokenizer
+            .encode(format!(" {hotword}"), false)
+            .map_err(|error| format!("Could not tokenize hotwords: {error}"))?;
+        let tokens = truncate_hotword_tokens(tokens.get_ids(), limit);
+        if !tokens.is_empty() {
+            sequences.push(tokens);
+        }
+    }
+    Ok(sequences)
+}
+
+fn hotword_bias_candidates(hotwords: &[Vec<u32>], sampled: &[u32]) -> Vec<u32> {
+    let mut candidates = Vec::new();
+    for hotword in hotwords {
+        let Some(&first) = hotword.first() else {
+            continue;
+        };
+        candidates.push(first);
+        for prefix_len in (1..hotword.len()).rev() {
+            if sampled.ends_with(&hotword[..prefix_len]) {
+                candidates.push(hotword[prefix_len]);
+                break;
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
 fn ensure_not_cancelled(job_id: &str, cancellation: &Cancellation) -> Result<(), String> {
     if cancellation.is_cancelled(job_id) {
         Err("cancelled".into())
@@ -1105,6 +1149,19 @@ mod tests {
         assert_eq!(truncated.len(), 223);
         assert_eq!(truncated[0], 0);
         assert_eq!(truncated[222], 222);
+    }
+
+    #[test]
+    fn hotword_bias_follows_matching_token_sequences() {
+        let hotwords = vec![vec![10, 11, 12], vec![20, 21]];
+
+        assert_eq!(hotword_bias_candidates(&hotwords, &[]), [10, 20]);
+        assert_eq!(hotword_bias_candidates(&hotwords, &[99, 10]), [10, 11, 20]);
+        assert_eq!(
+            hotword_bias_candidates(&hotwords, &[99, 10, 11]),
+            [10, 12, 20]
+        );
+        assert_eq!(hotword_bias_candidates(&hotwords, &[99, 20]), [10, 20, 21]);
     }
 
     #[test]

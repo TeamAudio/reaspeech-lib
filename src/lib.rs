@@ -29,6 +29,15 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
             "Starts transcription and returns a job ID. An error begins with ERROR:.",
         )?;
         session.plugin_register_add_api_and_def(
+            "ReaSpeech_StartEx",
+            api::start_ex_native as *mut _,
+            api::start_ex_vararg,
+            "const char*",
+            "const char*,const char*",
+            "audio_path,job_options_json",
+            "Starts transcription using JSON job options and returns a job ID. An error begins with ERROR:.",
+        )?;
+        session.plugin_register_add_api_and_def(
             "ReaSpeech_Poll",
             api::poll_native as *mut _,
             api::poll_vararg,

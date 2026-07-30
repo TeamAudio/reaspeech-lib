@@ -1,5 +1,6 @@
 use crate::common::WorkerContext;
 use crate::transcription::{self, Request};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -18,6 +19,22 @@ static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static CONTEXT: OnceLock<WorkerContext> = OnceLock::new();
 static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
 static RETURN_VALUE: OnceLock<Mutex<CString>> = OnceLock::new();
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct JobOptions {
+    model: String,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    translate: bool,
+    #[serde(default)]
+    vad: bool,
+    #[serde(default)]
+    words: bool,
+    #[serde(default)]
+    hotwords: Option<String>,
+}
 
 fn state() -> &'static Mutex<State> {
     STATE.get_or_init(Default::default)
@@ -51,19 +68,11 @@ pub fn push_event(job_id: &str, event: Value) {
         .push_back(serialized);
 }
 
-fn start(
-    audio_path: &str,
-    model_name: &str,
-    language: Option<&str>,
-    translate: bool,
-    vad: bool,
-    words: bool,
-    hotwords: Option<&str>,
-) -> Result<String, String> {
+fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
     }
-    validate_options(model_name, translate)?;
+    validate_options(&options.model, options.translate)?;
 
     let job_id = format!("reaspeech-{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     state()
@@ -76,16 +85,12 @@ fn start(
     let request = Request {
         job_id: job_id.clone(),
         audio_path: audio_path.to_owned(),
-        model_name: model_name.to_owned(),
-        language: language
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned),
-        translate,
-        vad,
-        words,
-        hotwords: hotwords
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned),
+        model_name: options.model,
+        language: options.language.filter(|value| !value.is_empty()),
+        translate: options.translate,
+        vad: options.vad,
+        words: options.words,
+        hotwords: options.hotwords.filter(|value| !value.trim().is_empty()),
     };
     let worker_context = context().clone();
     thread::spawn(move || {
@@ -203,13 +208,30 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
         let hotwords = string_arg(args, 6).unwrap_or("");
         start(
             audio,
-            model,
-            Some(language),
-            translate,
-            vad,
-            words,
-            Some(hotwords),
+            JobOptions {
+                model: model.to_owned(),
+                language: Some(language.to_owned()),
+                translate,
+                vad,
+                words,
+                hotwords: Some(hotwords.to_owned()),
+            },
         )
+    })();
+    match result {
+        Ok(job_id) => return_string(job_id),
+        Err(error) => return_string(format!("ERROR: {error}")),
+    }
+}
+
+pub unsafe extern "C" fn start_ex_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
+    let args = args(arglist, count);
+    let result = (|| {
+        let audio = string_arg(args, 0)?;
+        let options_json = string_arg(args, 1)?;
+        let options = serde_json::from_str::<JobOptions>(options_json)
+            .map_err(|error| format!("invalid job_options_json: {error}"))?;
+        start(audio, options)
     })();
     match result {
         Ok(job_id) => return_string(job_id),
@@ -251,6 +273,16 @@ pub extern "C" fn start_native(
     unsafe { start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char }
 }
 
+pub extern "C" fn start_ex_native(
+    audio_path: *const c_char,
+    job_options_json: *const c_char,
+) -> *const c_char {
+    let args = [audio_path as *mut c_void, job_options_json as *mut c_void];
+    unsafe {
+        start_ex_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char
+    }
+}
+
 pub extern "C" fn poll_native(job_id: *const c_char) -> *const c_char {
     let args = [job_id as *mut c_void];
     unsafe { poll_vararg(args.as_ptr() as *mut *mut c_void, 1) as *const c_char }
@@ -263,7 +295,7 @@ pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{optional_bool_arg, poll, push_event, state, validate_options};
+    use super::{optional_bool_arg, poll, push_event, state, validate_options, JobOptions};
     use serde_json::json;
     use std::collections::VecDeque;
     use std::ffi::c_void;
@@ -308,5 +340,28 @@ mod tests {
             assert!(optional_bool_arg(&args, 3));
             assert!(!optional_bool_arg(&args, 4));
         }
+    }
+
+    #[test]
+    fn job_options_defaults_optional_values() {
+        let options: JobOptions = serde_json::from_str(r#"{"model":"small"}"#).unwrap();
+        assert_eq!(
+            options,
+            JobOptions {
+                model: "small".into(),
+                language: None,
+                translate: false,
+                vad: false,
+                words: false,
+                hotwords: None,
+            }
+        );
+    }
+
+    #[test]
+    fn job_options_reject_unknown_fields() {
+        let error =
+            serde_json::from_str::<JobOptions>(r#"{"model":"small","word":true}"#).unwrap_err();
+        assert!(error.to_string().contains("unknown field `word`"));
     }
 }

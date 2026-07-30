@@ -7,9 +7,19 @@ transcription engine to Lua/ReaScript without blocking REAPER's main thread.
 
 ```lua
 job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)
+job_id = reaper.ReaSpeech_StartEx(audio_path, job_options_json)
 event_json = reaper.ReaSpeech_Poll(job_id)
 accepted = reaper.ReaSpeech_Cancel(job_id)
 ```
+
+### API functions
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)` | Job ID or `ERROR: ...` | Starts a job using convenient positional arguments. Only `audio_path` and `model` are required. |
+| `ReaSpeech_StartEx(audio_path, job_options_json)` | Job ID or `ERROR: ...` | Starts a job using a JSON `JobOptions` object. |
+| `ReaSpeech_Poll(job_id)` | JSON event or `""` | Removes and returns the next queued event. An empty string means no event is currently ready. |
+| `ReaSpeech_Cancel(job_id)` | Boolean | Requests cancellation. Returns `true` when the job exists. |
 
 Only `audio_path` and `model` are required. `language` defaults to automatic
 language detection, while `translate`, `vad`, and `words` default to `false`.
@@ -23,6 +33,31 @@ local job_id = reaper.ReaSpeech_Start(path, "small", "en", false, true, false, h
 
 Hotwords are hints rather than a restricted vocabulary or guaranteed output.
 Separate multiple entries with commas or newlines.
+
+For named options and future extensibility, use `ReaSpeech_StartEx`. Its
+`job_options_json` argument is a JSON object with the following fields:
+
+| `JobOptions` field | Type | Required | Default |
+| --- | --- | --- | --- |
+| `model` | String | Yes | — |
+| `language` | String | No | Automatic language detection |
+| `translate` | Boolean | No | `false` |
+| `vad` | Boolean | No | `false` |
+| `words` | Boolean | No | `false` |
+| `hotwords` | String | No | No hotwords |
+
+Unknown fields are rejected so that misspelled option names do not silently
+change transcription behavior. For example:
+
+```lua
+local options = [[{
+  "model": "small",
+  "language": "en",
+  "vad": true,
+  "hotwords": "ReaSpeech, REAPER, Cockos"
+}]]
+local job_id = reaper.ReaSpeech_StartEx(path, options)
+```
 
 `model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`.
 `large-v3-turbo` is transcription-only; select `small`, `medium`, or `large-v3`

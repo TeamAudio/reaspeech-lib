@@ -4,7 +4,6 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::Path;
-use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -58,6 +57,7 @@ fn start(
     language: Option<&str>,
     translate: bool,
     vad: bool,
+    words: bool,
 ) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
@@ -81,6 +81,7 @@ fn start(
             .map(str::to_owned),
         translate,
         vad,
+        words,
     };
     let worker_context = context().clone();
     thread::spawn(move || {
@@ -179,15 +180,23 @@ unsafe fn args<'a>(arglist: *mut *mut c_void, count: c_int) -> &'a [*mut c_void]
     }
 }
 
+unsafe fn optional_bool_arg(args: &[*mut c_void], index: usize) -> bool {
+    args.get(index)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .is_some_and(|ptr| *ptr.cast::<bool>())
+}
+
 pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
     let args = args(arglist, count);
     let result = (|| {
         let audio = string_arg(args, 0)?;
         let model = string_arg(args, 1)?;
         let language = string_arg(args, 2).unwrap_or("");
-        let translate = args.get(3).copied().unwrap_or(null_mut()) as isize != 0;
-        let vad = args.get(4).copied().unwrap_or(null_mut()) as isize != 0;
-        start(audio, model, Some(language), translate, vad)
+        let translate = optional_bool_arg(args, 3);
+        let vad = optional_bool_arg(args, 4);
+        let words = optional_bool_arg(args, 5);
+        start(audio, model, Some(language), translate, vad, words)
     })();
     match result {
         Ok(job_id) => return_string(job_id),
@@ -212,15 +221,17 @@ pub extern "C" fn start_native(
     audio_path: *const c_char,
     model_name: *const c_char,
     language: *const c_char,
-    translate: c_int,
-    vad: c_int,
+    translate: *const bool,
+    vad: *const bool,
+    words: *const bool,
 ) -> *const c_char {
     let args = [
         audio_path as *mut c_void,
         model_name as *mut c_void,
         language as *mut c_void,
-        translate as isize as *mut c_void,
-        vad as isize as *mut c_void,
+        translate as *mut c_void,
+        vad as *mut c_void,
+        words as *mut c_void,
     ];
     unsafe { start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char }
 }
@@ -237,9 +248,11 @@ pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{poll, push_event, state, validate_options};
+    use super::{optional_bool_arg, poll, push_event, state, validate_options};
     use serde_json::json;
     use std::collections::VecDeque;
+    use std::ffi::c_void;
+    use std::ptr::null_mut;
 
     #[test]
     fn polling_is_fifo_and_empty_when_drained() {
@@ -265,5 +278,20 @@ mod tests {
             "large-v3-turbo is not trained for translation; use small, medium, or large-v3"
         );
         assert!(validate_options("large-v3", true).is_ok());
+    }
+
+    #[test]
+    fn omitted_optional_booleans_default_to_false() {
+        let enabled = true;
+        let args = [
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &enabled as *const bool as *mut c_void,
+        ];
+        unsafe {
+            assert!(optional_bool_arg(&args, 3));
+            assert!(!optional_bool_arg(&args, 4));
+        }
     }
 }

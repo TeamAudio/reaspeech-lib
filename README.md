@@ -6,21 +6,29 @@ transcription engine to Lua/ReaScript without blocking REAPER's main thread.
 ## Lua API
 
 ```lua
-job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad)
+job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words)
 event_json = reaper.ReaSpeech_Poll(job_id)
 accepted = reaper.ReaSpeech_Cancel(job_id)
 ```
 
-`model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`. Use an empty
-language string for automatic language detection. `large-v3-turbo` is
-transcription-only; select `small`, `medium`, or `large-v3` when `translate` is
-enabled. `Poll` returns one queued
+Only `audio_path` and `model` are required. `language` defaults to automatic
+language detection, while `translate`, `vad`, and `words` default to `false`.
+`model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`.
+`large-v3-turbo` is transcription-only; select `small`, `medium`, or `large-v3`
+when `translate` is enabled. `Poll` returns one queued
 event at a time and returns `""` when no event is ready. Event types are
 `started`, `progress`, `segment`, `completed`, `cancelled`, and `error`. Each
 recognized segment is emitted immediately:
 
 ```json
 {"type":"segment","jobId":"reaspeech-1","segment":{"startMs":0,"endMs":820,"text":"Hello","confidence":0.94}}
+```
+
+When `words` is true, each segment also has a `words` array containing
+structures like the following:
+
+```json
+{"word":"Hello","start":0.0,"end":0.82,"probability":0.94}
 ```
 
 The terminal `completed` event contains timing metadata:

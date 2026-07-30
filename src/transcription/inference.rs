@@ -26,6 +26,14 @@ pub struct TranscriptSegment {
     pub end_ms: i64,
     pub text: String,
     pub confidence: f32,
+    pub words: Vec<TranscriptWord>,
+}
+
+pub struct TranscriptWord {
+    pub word: String,
+    pub start_seconds: f32,
+    pub end_seconds: f32,
+    pub probability: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +71,14 @@ struct DecodedPiece {
     end_seconds: f32,
     text: String,
     confidence: f32,
+    words: Vec<DecodedWord>,
+}
+
+struct DecodedWord {
+    text: String,
+    start_seconds: f32,
+    end_seconds: f32,
+    probability: f32,
 }
 
 #[derive(serde::Deserialize)]
@@ -120,6 +136,7 @@ pub fn transcribe<F>(
     vad_model: Option<&Path>,
     language: Option<&str>,
     translate: bool,
+    words: bool,
     context: &WorkerContext,
     mut on_segment: F,
 ) -> Result<(), String>
@@ -229,6 +246,7 @@ where
             let (pieces, no_speech) = decoder.decode(
                 &mel,
                 chunk.end - chunk.start,
+                words,
                 chunk_index,
                 chunk_count,
                 completed_samples,
@@ -256,6 +274,18 @@ where
                             .min(samples_to_ms(chunk.end)),
                         text: piece.text.trim().to_owned(),
                         confidence: piece.confidence,
+                        words: piece
+                            .words
+                            .into_iter()
+                            .map(|word| TranscriptWord {
+                                word: word.text,
+                                start_seconds: samples_to_ms(chunk.start) as f32 / 1000.0
+                                    + word.start_seconds,
+                                end_seconds: samples_to_ms(chunk.start) as f32 / 1000.0
+                                    + word.end_seconds,
+                                probability: word.probability,
+                            })
+                            .collect(),
                     };
                     on_segment(&segment);
                 }
@@ -340,6 +370,7 @@ impl Decoder {
         &mut self,
         mel: &Tensor,
         audio_samples: usize,
+        words: bool,
         chunk_index: usize,
         chunk_count: usize,
         completed_samples: usize,
@@ -482,8 +513,12 @@ impl Decoder {
             .ok_or("Whisper beam search returned no candidates")?;
         self.model = best.model.clone();
         let generated = &best.tokens[prefix_len..];
-        let pieces =
-            self.timestamped_pieces(generated, &best.token_log_probs, audio_seconds as f32)?;
+        let pieces = self.timestamped_pieces(
+            generated,
+            &best.token_log_probs,
+            audio_seconds as f32,
+            words,
+        )?;
         Ok((pieces, no_speech))
     }
 
@@ -572,6 +607,7 @@ impl Decoder {
         tokens: &[u32],
         token_log_probs: &[f64],
         audio_seconds: f32,
+        include_words: bool,
     ) -> Result<Vec<DecodedPiece>, String> {
         if tokens.len() != token_log_probs.len() {
             return Err("Whisper token probabilities do not match generated tokens".into());
@@ -597,6 +633,17 @@ impl Decoder {
                         end_seconds: time,
                         text,
                         confidence: confidence_from_log_probs(&text_log_probs),
+                        words: if include_words {
+                            words_from_tokens(
+                                &self.tokenizer,
+                                &text_tokens,
+                                &text_log_probs,
+                                start_seconds,
+                                time,
+                            )?
+                        } else {
+                            Vec::new()
+                        },
                     });
                     text_tokens.clear();
                     text_log_probs.clear();
@@ -617,6 +664,17 @@ impl Decoder {
                 end_seconds: audio_seconds,
                 text,
                 confidence: confidence_from_log_probs(&text_log_probs),
+                words: if include_words {
+                    words_from_tokens(
+                        &self.tokenizer,
+                        &text_tokens,
+                        &text_log_probs,
+                        start_seconds,
+                        audio_seconds,
+                    )?
+                } else {
+                    Vec::new()
+                },
             });
         }
         Ok(pieces)
@@ -665,6 +723,50 @@ fn confidence_from_log_probs(log_probs: &[f64]) -> f32 {
     }
     let mean = log_probs.iter().sum::<f64>() / log_probs.len() as f64;
     mean.exp().clamp(0.0, 1.0) as f32
+}
+
+fn words_from_tokens(
+    tokenizer: &Tokenizer,
+    tokens: &[u32],
+    log_probs: &[f64],
+    start_seconds: f32,
+    end_seconds: f32,
+) -> Result<Vec<DecodedWord>, String> {
+    if tokens.len() != log_probs.len() {
+        return Err("Whisper token probabilities do not match word tokens".into());
+    }
+    let mut words: Vec<(String, usize, usize, Vec<f64>)> = Vec::new();
+    for (index, (&token, &log_prob)) in tokens.iter().zip(log_probs).enumerate() {
+        let text = tokenizer
+            .decode(&[token], false)
+            .map_err(|error| error.to_string())?;
+        let starts_word = text.chars().next().is_some_and(char::is_whitespace);
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            continue;
+        }
+        if starts_word || words.is_empty() {
+            words.push((text, index, index + 1, vec![log_prob]));
+        } else if let Some((word, _, token_end, probabilities)) = words.last_mut() {
+            word.push_str(&text);
+            *token_end = index + 1;
+            probabilities.push(log_prob);
+        }
+    }
+
+    let token_count = tokens.len().max(1) as f32;
+    let duration = (end_seconds - start_seconds).max(0.0);
+    Ok(words
+        .into_iter()
+        .map(
+            |(word, token_start, token_end, probabilities)| DecodedWord {
+                text: word,
+                start_seconds: start_seconds + duration * token_start as f32 / token_count,
+                end_seconds: start_seconds + duration * token_end as f32 / token_count,
+                probability: confidence_from_log_probs(&probabilities),
+            },
+        )
+        .collect())
 }
 
 fn normalized_score(beam: &Beam) -> f64 {
@@ -1029,6 +1131,7 @@ mod tests {
             &bundle,
             vad_model.as_deref(),
             Some("en"),
+            false,
             false,
             &context,
             |segment| {

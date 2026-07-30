@@ -9,6 +9,8 @@ REAPER's edit cursor to its position in the corresponding item. Double-click a
 segment to move the cursor and start playback when the transport is stopped.
 The language menu defaults to automatic detection and also offers every
 language code supported by the recognizer.
+Word timestamps can optionally be included in the segment events. When enabled,
+the results view displays each word as a separate timestamped row.
 The hotwords field accepts names, terminology, and phrases to favor during
 recognition.
 

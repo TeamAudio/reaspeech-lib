@@ -203,6 +203,7 @@ local state = {
   language_index = 1,
   translate = false,
   vad = true,
+  words = false,
   hotwords = "",
   queue = {},
   current = nil,
@@ -232,7 +233,7 @@ local function start_next_job()
     LANGUAGES[state.language_index],
     state.translate,
     state.vad,
-    false,
+    state.words,
     state.hotwords
   )
   if state.job_id:sub(1, 6) == "ERROR:" then
@@ -385,6 +386,8 @@ local function render_options()
   if turbo_selected then reaper.ImGui_EndDisabled(ctx) end
   reaper.ImGui_SameLine(ctx)
   changed, state.vad = reaper.ImGui_Checkbox(ctx, "Voice activity detection", state.vad)
+  reaper.ImGui_SameLine(ctx)
+  changed, state.words = reaper.ImGui_Checkbox(ctx, "Word timestamps", state.words)
   reaper.ImGui_Text(ctx, "Hotwords")
   reaper.ImGui_SetNextItemWidth(ctx, -1)
   changed, state.hotwords = reaper.ImGui_InputText(
@@ -416,31 +419,41 @@ local function render_results()
         reaper.ImGui_TextDisabled(ctx, "No speech detected.")
       else
         for segment_index, segment in ipairs(result.segments) do
-          local start_seconds = (segment.startMs or 0) / 1000
-          local end_seconds = (segment.endMs or 0) / 1000
-          local score = segment.confidence ~= nil
-              and ("  [score: %.2f]"):format(segment.confidence)
-              or ""
-          local label = ("%02d:%05.2f - %02d:%05.2f  %s%s"):format(
-            math.floor(start_seconds / 60),
-            start_seconds % 60,
-            math.floor(end_seconds / 60),
-            end_seconds % 60,
-            (segment.text or ""):match("^%s*(.-)%s*$"),
-            score
-          )
-          local id = ("##segment-%d-%d"):format(result_index, segment_index)
-          local selected = reaper.ImGui_Selectable(
-            ctx,
-            label .. id,
-            false,
-            reaper.ImGui_SelectableFlags_AllowDoubleClick()
-          )
-          if selected then
-            seek_to_segment(result, segment)
-            if reaper.ImGui_IsMouseDoubleClicked(ctx, 0)
-                and reaper.GetPlayState() % 2 == 0 then
-              reaper.OnPlayButton()
+          local rows = segment.words or {segment}
+          for row_index, row in ipairs(rows) do
+            local is_word = segment.words ~= nil
+            local start_seconds = is_word and (row.start or 0) or (row.startMs or 0) / 1000
+            local end_seconds = is_word and (row["end"] or 0) or (row.endMs or 0) / 1000
+            local text = is_word and row.word or row.text
+            local confidence = is_word and row.probability or row.confidence
+            local score = confidence ~= nil
+                and ("  [score: %.2f]"):format(confidence)
+                or ""
+            local label = ("%02d:%05.2f - %02d:%05.2f  %s%s"):format(
+              math.floor(start_seconds / 60),
+              start_seconds % 60,
+              math.floor(end_seconds / 60),
+              end_seconds % 60,
+              (text or ""):match("^%s*(.-)%s*$"),
+              score
+            )
+            local id = ("##result-%d-%d-%d"):format(
+              result_index,
+              segment_index,
+              row_index
+            )
+            local selected = reaper.ImGui_Selectable(
+              ctx,
+              label .. id,
+              false,
+              reaper.ImGui_SelectableFlags_AllowDoubleClick()
+            )
+            if selected then
+              seek_to_segment(result, {startMs = start_seconds * 1000})
+              if reaper.ImGui_IsMouseDoubleClicked(ctx, 0)
+                  and reaper.GetPlayState() % 2 == 0 then
+                reaper.OnPlayButton()
+              end
             end
           end
         end

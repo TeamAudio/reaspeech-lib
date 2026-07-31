@@ -71,7 +71,7 @@ event at a time and returns `""` when no event is ready. Event types are
 recognized segment is emitted immediately:
 
 ```json
-{"type":"segment","jobId":"reaspeech-1","segment":{"startMs":0,"endMs":820,"text":"Hello","confidence":0.94}}
+{"type":"segment","jobId":"reaspeech-1","segment":{"startMs":0,"endMs":820,"text":"Hello","probability":0.94}}
 ```
 
 When `words` is true, each segment also has a `words` array containing

@@ -27,7 +27,7 @@ pub struct TranscriptSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub text: String,
-    pub confidence: f32,
+    pub probability: f32,
     pub words: Vec<TranscriptWord>,
 }
 
@@ -73,7 +73,7 @@ struct DecodedPiece {
     start_seconds: f32,
     end_seconds: f32,
     text: String,
-    confidence: f32,
+    probability: f32,
     words: Vec<DecodedWord>,
 }
 
@@ -281,7 +281,7 @@ where
                             + (piece.end_seconds * 1000.0).round() as i64)
                             .min(samples_to_ms(chunk.end)),
                         text: piece.text.trim().to_owned(),
-                        confidence: piece.confidence,
+                        probability: piece.probability,
                         words: piece
                             .words
                             .into_iter()
@@ -672,7 +672,7 @@ impl Decoder {
                         start_seconds,
                         end_seconds: time,
                         text,
-                        confidence: confidence_from_log_probs(&text_log_probs),
+                        probability: probability_from_log_probs(&text_log_probs),
                         words: if include_words {
                             words_from_tokens(
                                 &self.tokenizer,
@@ -703,7 +703,7 @@ impl Decoder {
                 start_seconds,
                 end_seconds: audio_seconds,
                 text,
-                confidence: confidence_from_log_probs(&text_log_probs),
+                probability: probability_from_log_probs(&text_log_probs),
                 words: if include_words {
                     words_from_tokens(
                         &self.tokenizer,
@@ -757,7 +757,7 @@ fn expand_beam(
         .collect())
 }
 
-fn confidence_from_log_probs(log_probs: &[f64]) -> f32 {
+fn probability_from_log_probs(log_probs: &[f64]) -> f32 {
     if log_probs.is_empty() {
         return 0.0;
     }
@@ -803,7 +803,7 @@ fn words_from_tokens(
                 text: word,
                 start_seconds: start_seconds + duration * token_start as f32 / token_count,
                 end_seconds: start_seconds + duration * token_end as f32 / token_count,
-                probability: confidence_from_log_probs(&probabilities),
+                probability: probability_from_log_probs(&probabilities),
             },
         )
         .collect())
@@ -1129,11 +1129,11 @@ mod tests {
     }
 
     #[test]
-    fn confidence_uses_geometric_mean_of_token_probabilities() {
-        let confidence = confidence_from_log_probs(&[0.9_f64.ln(), 0.4_f64.ln()]);
+    fn probability_uses_geometric_mean_of_token_probabilities() {
+        let probability = probability_from_log_probs(&[0.9_f64.ln(), 0.4_f64.ln()]);
 
-        assert!((confidence - 0.6).abs() < f32::EPSILON);
-        assert_eq!(confidence_from_log_probs(&[]), 0.0);
+        assert!((probability - 0.6).abs() < f32::EPSILON);
+        assert_eq!(probability_from_log_probs(&[]), 0.0);
     }
 
     #[test]

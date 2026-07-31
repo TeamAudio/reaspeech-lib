@@ -37,7 +37,7 @@ pub struct Segment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub text: String,
-    pub confidence: f32,
+    pub probability: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<Word>>,
 }
@@ -74,7 +74,7 @@ where
                 start_ms: segment.start_ms,
                 end_ms: segment.end_ms,
                 text: segment.text.clone(),
-                confidence: segment.confidence,
+                probability: segment.probability,
                 words: request.words.then(|| {
                     segment
                         .words
@@ -114,10 +114,11 @@ mod tests {
             start_ms: 0,
             end_ms: 820,
             text: "Hello".into(),
-            confidence: 0.94,
+            probability: 0.94,
             words: None,
         };
         let json = serde_json::to_value(&segment).unwrap();
+        assert!((json["probability"].as_f64().unwrap() - 0.94).abs() < 0.0001);
         assert!(json.get("words").is_none());
 
         let segment = Segment {

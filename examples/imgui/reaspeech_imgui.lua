@@ -425,9 +425,9 @@ local function render_results()
             local start_seconds = is_word and (row.start or 0) or (row.startMs or 0) / 1000
             local end_seconds = is_word and (row["end"] or 0) or (row.endMs or 0) / 1000
             local text = is_word and row.word or row.text
-            local confidence = is_word and row.probability or row.confidence
-            local score = confidence ~= nil
-                and ("  [score: %.2f]"):format(confidence)
+            local probability = row.probability
+            local score = probability ~= nil
+                and ("  [score: %.2f]"):format(probability)
                 or ""
             local label = ("%02d:%05.2f - %02d:%05.2f  %s%s"):format(
               math.floor(start_seconds / 60),

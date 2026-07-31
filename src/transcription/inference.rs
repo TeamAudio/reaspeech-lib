@@ -10,7 +10,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 
 const SAMPLE_RATE: usize = 16_000;
@@ -84,6 +84,17 @@ struct DecodedWord {
     probability: f32,
 }
 
+#[derive(Default)]
+struct DecoderProfile {
+    encoder: Duration,
+    prefix: Duration,
+    decoder: Duration,
+    projection: Duration,
+    rules: Duration,
+    beam: Duration,
+    token_steps: usize,
+}
+
 #[derive(serde::Deserialize)]
 struct GenerationConfig {
     #[serde(default)]
@@ -149,6 +160,7 @@ where
     F: FnMut(&TranscriptSegment),
 {
     let started = Instant::now();
+    let profiling = profiling_enabled();
     emit_stage(job_id, "Loading Model", 0);
     let config: Config = serde_json::from_str(
         &fs::read_to_string(&bundle.config)
@@ -170,6 +182,7 @@ where
             beam_size
         ),
     );
+    let model_started = Instant::now();
     let tokenizer = Tokenizer::from_file(&bundle.tokenizer)
         .map_err(|error| format!("Could not load Whisper tokenizer: {error}"))?;
     let vb = model_var_builder(&bundle.weights, &device)?;
@@ -177,12 +190,13 @@ where
         .map_err(|error| format!("Could not initialize Whisper: {error}"))?;
     log_job(
         job_id,
-        &format!("model loaded in {:.2?}", started.elapsed()),
+        &format!("model loaded in {:.2?}", model_started.elapsed()),
     );
     let mel_filters = read_mel_filters(bundle, config.num_mel_bins)?;
     ensure_not_cancelled(job_id, &context.cancellation)?;
 
     emit_stage(job_id, "Detecting Speech", 0);
+    let vad_started = Instant::now();
     let regions = if let Some(vad_model) = vad_model {
         detect_speech(pcm, vad_model, job_id, &context.cancellation)?
     } else {
@@ -199,10 +213,12 @@ where
             started.elapsed()
         ),
     );
+    profile_job(job_id, profiling, "vad", vad_started.elapsed());
     if regions.is_empty() {
         return Ok(());
     }
 
+    let setup_started = Instant::now();
     let first_mel = mel_tensor(
         &config,
         &mel_filters,
@@ -213,6 +229,12 @@ where
         Some(code) => Some(token_id(&tokenizer, &format!("<|{code}|>"))?),
         None => Some(detect_language(model.clone(), &tokenizer, &first_mel)?),
     };
+    profile_job(
+        job_id,
+        profiling,
+        "initial mel + language",
+        setup_started.elapsed(),
+    );
     let mut decoder = Decoder::new(
         model,
         tokenizer,
@@ -250,7 +272,12 @@ where
                 &format!("Transcribing {chunk_index}/{chunk_count}: mel"),
                 completed_samples.saturating_mul(100) as u64 / total_samples.max(1) as u64,
             );
+            let mel_started = Instant::now();
             let mel = mel_tensor(&config, &mel_filters, &pcm[chunk.start..chunk.end], &device)?;
+            if profiling {
+                device.synchronize().map_err(candle_error)?;
+            }
+            profile_job(job_id, profiling, "chunk mel", mel_started.elapsed());
             let (pieces, no_speech) = decoder.decode(
                 &mel,
                 chunk.end - chunk.start,
@@ -306,6 +333,7 @@ where
             );
         }
     }
+    profile_job(job_id, profiling, "transcription total", started.elapsed());
     Ok(())
 }
 
@@ -391,6 +419,8 @@ impl Decoder {
         job_id: &str,
         cancellation: &Cancellation,
     ) -> Result<(Vec<DecodedPiece>, f64), String> {
+        let profiling = profiling_enabled();
+        let mut profile = DecoderProfile::default();
         self.model.reset_kv_cache();
         let encoder_started = Instant::now();
         emit_stage(
@@ -403,6 +433,8 @@ impl Decoder {
             .encoder
             .forward(mel, true)
             .map_err(candle_error)?;
+        profile_sync(mel.device(), profiling)?;
+        profile.encoder += encoder_started.elapsed();
         log_tensor_stats(job_id, "encoder output", &audio_features)?;
         log_job(
             job_id,
@@ -420,6 +452,7 @@ impl Decoder {
         });
         let prefix_len = prefix.len();
 
+        let prefix_started = Instant::now();
         let prefix_tensor = Tensor::new(prefix.as_slice(), mel.device())
             .and_then(|tensor| tensor.unsqueeze(0))
             .map_err(candle_error)?;
@@ -428,7 +461,10 @@ impl Decoder {
             .decoder
             .forward(&prefix_tensor, &audio_features, true)
             .map_err(candle_error)?;
+        profile_sync(mel.device(), profiling)?;
+        profile.prefix += prefix_started.elapsed();
         log_tensor_stats(job_id, "first decoder output", &ys)?;
+        let projection_started = Instant::now();
         let no_speech_logits = self
             .model
             .decoder
@@ -444,9 +480,14 @@ impl Decoder {
             .and_then(|tensor| tensor.to_scalar::<f32>())
             .map_err(candle_error)? as f64;
         let first_logits = last_logits(&self.model, &ys)?;
+        profile_sync(mel.device(), profiling)?;
+        profile.projection += projection_started.elapsed();
         log_tensor_stats(job_id, "first decoder logits", &first_logits)?;
+        let rules_started = Instant::now();
         let logits = self.apply_hotword_bias(first_logits, &[])?;
         let logits = self.apply_timestamp_rules(logits, &prefix, prefix_len)?;
+        profile.rules += rules_started.elapsed();
+        let beam_started = Instant::now();
         let mut beams = expand_beam(
             Beam {
                 model: self.model.clone(),
@@ -460,6 +501,7 @@ impl Decoder {
             self.eot_token,
             &self.suppress_tokens,
         )?;
+        profile.beam += beam_started.elapsed();
 
         let audio_seconds = audio_samples as f64 / SAMPLE_RATE as f64;
         let available_steps = self
@@ -485,6 +527,7 @@ impl Decoder {
                 // always applies positional embeddings starting at position 0.
                 // Re-submit the full prefix on every step, as the upstream
                 // Candle example does, so each token gets the correct position.
+                let decoder_started = Instant::now();
                 let input = Tensor::new(beam.tokens.as_slice(), mel.device())
                     .and_then(|tensor| tensor.unsqueeze(0))
                     .map_err(candle_error)?;
@@ -493,11 +536,17 @@ impl Decoder {
                     .decoder
                     .forward(&input, &audio_features, false)
                     .map_err(candle_error)?;
-                let logits = self.apply_hotword_bias(
-                    last_logits(&beam.model, &ys)?,
-                    &beam.tokens[prefix_len..],
-                )?;
+                profile_sync(mel.device(), profiling)?;
+                profile.decoder += decoder_started.elapsed();
+                let projection_started = Instant::now();
+                let logits = last_logits(&beam.model, &ys)?;
+                profile_sync(mel.device(), profiling)?;
+                profile.projection += projection_started.elapsed();
+                let rules_started = Instant::now();
+                let logits = self.apply_hotword_bias(logits, &beam.tokens[prefix_len..])?;
                 let logits = self.apply_timestamp_rules(logits, &beam.tokens, prefix_len)?;
+                profile.rules += rules_started.elapsed();
+                let beam_started = Instant::now();
                 candidates.extend(expand_beam(
                     beam,
                     logits,
@@ -505,6 +554,8 @@ impl Decoder {
                     self.eot_token,
                     &self.suppress_tokens,
                 )?);
+                profile.beam += beam_started.elapsed();
+                profile.token_steps += 1;
             }
             candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
             candidates.truncate(self.beam_size);
@@ -543,6 +594,21 @@ impl Decoder {
             audio_seconds as f32,
             words,
         )?;
+        if profiling {
+            log_job(
+                job_id,
+                &format!(
+                    "profile chunk: encoder={:.2?}, prefix={:.2?}, decoder={:.2?}, projection={:.2?}, rules/transfers={:.2?}, beam={:.2?}, token_steps={}",
+                    profile.encoder,
+                    profile.prefix,
+                    profile.decoder,
+                    profile.projection,
+                    profile.rules,
+                    profile.beam,
+                    profile.token_steps
+                ),
+            );
+        }
         Ok((pieces, no_speech))
     }
 
@@ -1016,6 +1082,23 @@ fn log_job(job_id: &str, message: &str) {
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
         }
+    }
+}
+
+fn profiling_enabled() -> bool {
+    std::env::var_os("REASPEECH_PROFILE").is_some()
+}
+
+fn profile_sync(device: &Device, enabled: bool) -> Result<(), String> {
+    if enabled {
+        device.synchronize().map_err(candle_error)?;
+    }
+    Ok(())
+}
+
+pub(super) fn profile_job(job_id: &str, enabled: bool, stage: &str, elapsed: Duration) {
+    if enabled {
+        log_job(job_id, &format!("profile {stage}: {elapsed:.2?}"));
     }
 }
 

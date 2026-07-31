@@ -156,6 +156,23 @@ patch to Candle's Metal kernels that omits unused BF16 GEMV variants on older
 Metal language targets, allowing the F32 Whisper implementation to use Metal
 on M1 and later Macs.
 
+## Performance profiling
+
+Set `REASPEECH_PROFILE` before starting REAPER to log detailed stage timings.
+Set `REASPEECH_LOG_PATH` as well to save the output to a file:
+
+```bat
+set "REASPEECH_PROFILE=1"
+set "REASPEECH_LOG_PATH=%TEMP%\reaspeech-profile.log"
+start "" "C:\Program Files\REAPER (x64)\reaper.exe"
+```
+
+Profiling reports audio decoding, asset lookup, model loading, VAD and language
+setup, mel generation, encoder execution, decoder execution, vocabulary
+projection, logits rules/transfers, and beam selection. GPU operations are
+synchronized at stage boundaries to make their timings meaningful, so use the
+profile to locate bottlenecks rather than as the final production benchmark.
+
 ## Continuous integration builds
 
 The `Build` GitHub Actions workflow builds and uploads ready-to-install

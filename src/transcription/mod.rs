@@ -9,6 +9,7 @@ mod vad;
 use audio::decode_audio_16khz_mono;
 use inference::transcribe;
 use models::{ensure_model, ensure_vad_model};
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct Request {
@@ -46,19 +47,36 @@ pub fn run<F>(request: &Request, context: &WorkerContext, mut on_segment: F) -> 
 where
     F: FnMut(&Segment),
 {
+    let profiling = std::env::var_os("REASPEECH_PROFILE").is_some();
+    let job_started = Instant::now();
     emit_stage(&request.job_id, "Decoding audio", 0);
+    let audio_started = Instant::now();
     let audio = decode_audio_16khz_mono(&request.job_id, &request.audio_path, context)?;
+    inference::profile_job(
+        &request.job_id,
+        profiling,
+        "audio decode",
+        audio_started.elapsed(),
+    );
     ensure_not_cancelled(&request.job_id, context)?;
 
     emit_stage(&request.job_id, "Downloading", 0);
+    let assets_started = Instant::now();
     let model = ensure_model(&request.job_id, &request.model_name, context)?;
     let vad_model = request
         .vad
         .then(|| ensure_vad_model(&request.job_id, context))
         .transpose()?;
+    inference::profile_job(
+        &request.job_id,
+        profiling,
+        "model/VAD assets",
+        assets_started.elapsed(),
+    );
     ensure_not_cancelled(&request.job_id, context)?;
 
-    transcribe(
+    let inference_started = Instant::now();
+    let result = transcribe(
         &request.job_id,
         &audio,
         &model,
@@ -89,7 +107,20 @@ where
                 }),
             });
         },
-    )
+    );
+    inference::profile_job(
+        &request.job_id,
+        profiling,
+        "inference call",
+        inference_started.elapsed(),
+    );
+    inference::profile_job(
+        &request.job_id,
+        profiling,
+        "job total",
+        job_started.elapsed(),
+    );
+    result
 }
 
 fn ensure_not_cancelled(job_id: &str, context: &WorkerContext) -> Result<(), String> {

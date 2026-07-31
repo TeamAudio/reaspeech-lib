@@ -41,5 +41,6 @@ panic = "abort"
 panic = "abort"
 
 [patch.crates-io]
+candle-transformers = { path = "vendor/candle-transformers" }
 candle-metal-kernels = { path = "vendor/candle-metal-kernels" }
 candle-kernels = { path = "vendor/candle-kernels" }

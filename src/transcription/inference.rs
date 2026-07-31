@@ -5,10 +5,12 @@ use crate::common::{Cancellation, WorkerContext};
 use byteorder::{ByteOrder, LittleEndian};
 use candle_core::{DType, Device, IndexOp, Shape, Tensor};
 use candle_nn::{ops::softmax, var_builder::SimpleBackend, VarBuilder};
+use candle_transformers::models::whisper::timestamps::{AlignmentHeads, PostProcessor};
 use candle_transformers::models::whisper::{self as whisper, audio, Config};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
@@ -67,6 +69,7 @@ struct Decoder {
     language_token: Option<u32>,
     translate: bool,
     beam_size: usize,
+    alignment_heads: AlignmentHeads,
 }
 
 struct DecodedPiece {
@@ -162,11 +165,13 @@ where
     let started = Instant::now();
     let profiling = profiling_enabled();
     emit_stage(job_id, "Loading Model", 0);
-    let config: Config = serde_json::from_str(
+    let mut config: Config = serde_json::from_str(
         &fs::read_to_string(&bundle.config)
             .map_err(|error| format!("Could not read Whisper configuration: {error}"))?,
     )
     .map_err(|error| format!("Invalid Whisper configuration: {error}"))?;
+    config.use_self_attention_kv_cache = true;
+    config.dtw_timestamps = words;
     let generation_config: GenerationConfig = serde_json::from_str(
         &fs::read_to_string(&bundle.generation_config)
             .map_err(|error| format!("Could not read Whisper generation configuration: {error}"))?,
@@ -390,6 +395,13 @@ impl Decoder {
         *no_timestamps_entry = true;
         let hotword_limit = model.config.max_target_positions / 2 - 1;
         let hotword_token_sequences = tokenize_hotwords(&tokenizer, hotwords, hotword_limit)?;
+        let alignment_heads = match model.config.decoder_layers {
+            12 => AlignmentHeads::small(),
+            24 => AlignmentHeads::medium(),
+            32 => AlignmentHeads::large_v3(),
+            4 => AlignmentHeads::large_v3_turbo(),
+            _ => AlignmentHeads::default(),
+        };
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -404,6 +416,7 @@ impl Decoder {
             language_token,
             translate,
             beam_size,
+            alignment_heads,
         })
     }
 
@@ -523,10 +536,8 @@ impl Decoder {
                     candidates.push(beam);
                     continue;
                 }
-                // Candle's Whisper decoder has no self-attention KV cache and
-                // always applies positional embeddings starting at position 0.
-                // Re-submit the full prefix on every step, as the upstream
-                // Candle example does, so each token gets the correct position.
+                // The vendored decoder consumes only the uncached suffix while
+                // retaining the full token list here for beam branching.
                 let decoder_started = Instant::now();
                 let input = Tensor::new(beam.tokens.as_slice(), mel.device())
                     .and_then(|tensor| tensor.unsqueeze(0))
@@ -588,12 +599,50 @@ impl Decoder {
             .ok_or("Whisper beam search returned no candidates")?;
         self.model = best.model.clone();
         let generated = &best.tokens[prefix_len..];
-        let pieces = self.timestamped_pieces(
+        let mut pieces = self.timestamped_pieces(
             generated,
             &best.token_log_probs,
             audio_seconds as f32,
             words,
         )?;
+        if words {
+            let n_frames = (audio_samples + whisper::HOP_LENGTH - 1) / whisper::HOP_LENGTH;
+            let raw = self
+                .model
+                .dtw_timestamps(
+                    self.alignment_heads.clone(),
+                    NonZeroUsize::new(7).expect("non-zero DTW filter width"),
+                    n_frames,
+                    prefix_len,
+                )
+                .map_err(candle_error)?
+                .into_iter()
+                .next();
+            if let Some(raw) = raw {
+                let tokens = best.tokens.as_slice();
+                let aligned =
+                    <Self as PostProcessor>::label(self, &raw, tokens).map_err(candle_error)?;
+                for piece in &mut pieces {
+                    piece.words = aligned
+                        .iter()
+                        .filter(|word| {
+                            let midpoint = (word.start + word.end) * 0.5;
+                            midpoint >= piece.start_seconds && midpoint <= piece.end_seconds
+                        })
+                        .map(|word| DecodedWord {
+                            text: word.text.clone(),
+                            start_seconds: word.start,
+                            end_seconds: word.end,
+                            probability: probability_for_word_tokens(
+                                &word.tokens,
+                                generated,
+                                &best.token_log_probs,
+                            ),
+                        })
+                        .collect();
+                }
+            }
+        }
         if profiling {
             log_job(
                 job_id,
@@ -829,6 +878,35 @@ fn probability_from_log_probs(log_probs: &[f64]) -> f32 {
     }
     let mean = log_probs.iter().sum::<f64>() / log_probs.len() as f64;
     mean.exp().clamp(0.0, 1.0) as f32
+}
+
+fn probability_for_word_tokens(word: &[u32], tokens: &[u32], log_probs: &[f64]) -> f32 {
+    if word.is_empty() || tokens.len() != log_probs.len() {
+        return 0.0;
+    }
+    tokens
+        .windows(word.len())
+        .position(|candidate| candidate == word)
+        .map(|start| probability_from_log_probs(&log_probs[start..start + word.len()]))
+        .unwrap_or(0.0)
+}
+
+impl PostProcessor for Decoder {
+    type Error = candle_core::Error;
+
+    fn decode(&mut self, tokens: &[u32]) -> candle_core::Result<Vec<whisper::timestamps::Segment>> {
+        let full = self
+            .tokenizer
+            .decode(tokens, true)
+            .map_err(candle_core::Error::msg)?;
+        let token_text = tokens
+            .iter()
+            .filter(|&&token| token < 50_000)
+            .map(|&token| self.tokenizer.decode(&[token], true))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(candle_core::Error::msg)?;
+        whisper::timestamps::unicode_segments(full, token_text)
+    }
 }
 
 fn words_from_tokens(

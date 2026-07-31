@@ -70,6 +70,7 @@ struct Decoder {
     translate: bool,
     beam_size: usize,
     alignment_heads: AlignmentHeads,
+    split_on_unicode_only: bool,
 }
 
 struct DecodedPiece {
@@ -402,6 +403,14 @@ impl Decoder {
             4 => AlignmentHeads::large_v3_turbo(),
             _ => AlignmentHeads::default(),
         };
+        let split_on_unicode_only = language_token
+            .and_then(|token| tokenizer.id_to_token(token))
+            .is_some_and(|language| {
+                matches!(
+                    language.as_str(),
+                    "<|zh|>" | "<|ja|>" | "<|th|>" | "<|lo|>" | "<|my|>" | "<|yue|>"
+                )
+            });
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -417,6 +426,7 @@ impl Decoder {
             translate,
             beam_size,
             alignment_heads,
+            split_on_unicode_only,
         })
     }
 
@@ -891,6 +901,32 @@ fn probability_for_word_tokens(word: &[u32], tokens: &[u32], log_probs: &[f64]) 
         .unwrap_or(0.0)
 }
 
+fn group_word_segments(
+    segments: Vec<whisper::timestamps::Segment>,
+    split_on_unicode_only: bool,
+) -> Vec<whisper::timestamps::Segment> {
+    if split_on_unicode_only {
+        return segments;
+    }
+
+    const ASCII_PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    let mut words: Vec<whisper::timestamps::Segment> = Vec::new();
+    for segment in segments {
+        let with_space = segment.text.starts_with(char::is_whitespace);
+        let punctuation = {
+            let text = segment.text.trim();
+            !text.is_empty() && ASCII_PUNCTUATION.contains(text)
+        };
+        if with_space || punctuation || words.is_empty() {
+            words.push(segment);
+        } else if let Some(word) = words.last_mut() {
+            word.text.push_str(&segment.text);
+            word.token_indices.extend(segment.token_indices);
+        }
+    }
+    words
+}
+
 impl PostProcessor for Decoder {
     type Error = candle_core::Error;
 
@@ -905,7 +941,8 @@ impl PostProcessor for Decoder {
             .map(|&token| self.tokenizer.decode(&[token], true))
             .collect::<Result<Vec<_>, _>>()
             .map_err(candle_core::Error::msg)?;
-        whisper::timestamps::unicode_segments(full, token_text)
+        let segments = whisper::timestamps::unicode_segments(full, token_text)?;
+        Ok(group_word_segments(segments, self.split_on_unicode_only))
     }
 }
 
@@ -1295,6 +1332,56 @@ mod tests {
 
         assert!((probability - 0.6).abs() < f32::EPSILON);
         assert_eq!(probability_from_log_probs(&[]), 0.0);
+    }
+
+    #[test]
+    fn groups_space_delimited_subwords_like_whisper() {
+        let segments = vec![
+            word_segment(" You", 0),
+            word_segment("'re", 1),
+            word_segment(" wel", 2),
+            word_segment("come", 3),
+            word_segment("!", 4),
+        ];
+
+        let grouped = group_word_segments(segments, false);
+
+        assert_eq!(grouped.len(), 3);
+        assert_eq!(grouped[0].text, " You're");
+        assert_eq!(grouped[0].token_indices, [0, 1]);
+        assert_eq!(grouped[1].text, " welcome");
+        assert_eq!(grouped[1].token_indices, [2, 3]);
+        assert_eq!(grouped[2].text, "!");
+    }
+
+    #[test]
+    fn keeps_a_leading_quote_with_the_following_word() {
+        let grouped = group_word_segments(
+            vec![
+                word_segment(" said", 0),
+                word_segment(" '", 1),
+                word_segment("hello", 2),
+            ],
+            false,
+        );
+
+        assert_eq!(grouped[0].text, " said");
+        assert_eq!(grouped[1].text, " 'hello");
+        assert_eq!(grouped[1].token_indices, [1, 2]);
+    }
+
+    #[test]
+    fn no_space_languages_keep_unicode_segments() {
+        let grouped = group_word_segments(vec![word_segment("你", 0), word_segment("好", 1)], true);
+
+        assert_eq!(grouped.len(), 2);
+    }
+
+    fn word_segment(text: &str, token: usize) -> whisper::timestamps::Segment {
+        whisper::timestamps::Segment {
+            text: text.into(),
+            token_indices: vec![token],
+        }
     }
 
     #[test]

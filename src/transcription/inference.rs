@@ -366,7 +366,7 @@ fn model_var_builder<'a>(weights: &Path, device: &Device) -> Result<VarBuilder<'
 
 impl Decoder {
     fn new(
-        model: whisper::model::Whisper,
+        mut model: whisper::model::Whisper,
         tokenizer: Tokenizer,
         language_token: Option<u32>,
         translate: bool,
@@ -411,6 +411,7 @@ impl Decoder {
                     "<|zh|>" | "<|ja|>" | "<|th|>" | "<|lo|>" | "<|my|>" | "<|yue|>"
                 )
             });
+        model.set_dtw_attention_capture(false);
         Ok(Self {
             model,
             sot_token: token_id(&tokenizer, whisper::SOT_TOKEN)?,
@@ -514,7 +515,7 @@ impl Decoder {
         let mut beams = expand_beam(
             Beam {
                 model: self.model.clone(),
-                tokens: prefix,
+                tokens: prefix.clone(),
                 token_log_probs: Vec::new(),
                 score: 0.0,
                 finished: false,
@@ -616,6 +617,24 @@ impl Decoder {
             words,
         )?;
         if words {
+            let text_tokens: Vec<u32> = generated
+                .iter()
+                .copied()
+                .filter(|&token| token < self.eot_token)
+                .collect();
+            let mut alignment_tokens = prefix;
+            alignment_tokens.push(self.no_timestamps_token);
+            alignment_tokens.extend_from_slice(&text_tokens);
+            alignment_tokens.push(self.eot_token);
+            self.model.reset_kv_cache();
+            self.model.set_dtw_attention_capture(true);
+            let alignment_input = Tensor::new(alignment_tokens.as_slice(), mel.device())
+                .and_then(|tensor| tensor.unsqueeze(0))
+                .map_err(candle_error)?;
+            self.model
+                .decoder
+                .forward(&alignment_input, &audio_features, true)
+                .map_err(candle_error)?;
             let n_frames = (audio_samples + whisper::HOP_LENGTH - 1) / whisper::HOP_LENGTH;
             let raw = self
                 .model
@@ -629,9 +648,8 @@ impl Decoder {
                 .into_iter()
                 .next();
             if let Some(raw) = raw {
-                let tokens = best.tokens.as_slice();
-                let aligned =
-                    <Self as PostProcessor>::label(self, &raw, tokens).map_err(candle_error)?;
+                let aligned = <Self as PostProcessor>::label(self, &raw, &text_tokens)
+                    .map_err(candle_error)?;
                 for piece in &mut pieces {
                     piece.words = aligned
                         .iter()
@@ -652,6 +670,7 @@ impl Decoder {
                         .collect();
                 }
             }
+            self.model.set_dtw_attention_capture(false);
         }
         if profiling {
             log_job(

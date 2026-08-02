@@ -515,6 +515,22 @@ impl Whisper {
         let _ = self.take_attention_outputs();
     }
 
+    pub fn set_dtw_attention_capture(&mut self, enabled: bool) {
+        self.clear_attention_outputs();
+        for (attention, _) in self
+            .decoder
+            .blocks
+            .iter_mut()
+            .filter_map(|layer| layer.cross_attn.as_mut())
+        {
+            attention.output_attentions = if enabled {
+                AttentionOutput::Enabled(None)
+            } else {
+                AttentionOutput::Disabled
+            };
+        }
+    }
+
     fn take_attention_outputs(&mut self) -> Vec<Tensor> {
         self.decoder
             .blocks

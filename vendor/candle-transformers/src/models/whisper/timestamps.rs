@@ -233,7 +233,12 @@ impl AlignmentHeads {
             0,
         )?;
 
-        Ok(timestamps.to_vec2::<f32>()?.into_iter().map(Raw).collect())
+        Ok(timestamps
+            .to_dtype(candle::DType::F32)?
+            .to_vec2::<f32>()?
+            .into_iter()
+            .map(Raw)
+            .collect())
     }
 }
 

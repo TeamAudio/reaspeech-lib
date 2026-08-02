@@ -352,21 +352,18 @@ where
 }
 
 fn model_var_builder<'a>(weights: &Path, device: &Device) -> Result<VarBuilder<'a>, String> {
+    let dtype = inference_dtype(device);
     if matches!(device, Device::Metal(_)) {
         let tensors = unsafe { candle_core::safetensors::MmapedSafetensors::new(weights) }
             .map_err(|error| format!("Could not load Whisper weights: {error}"))?;
         Ok(VarBuilder::from_backend(
             Box::new(CpuCastingSafetensors { tensors }),
-            whisper::DTYPE,
+            dtype,
             device.clone(),
         ))
     } else {
         unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                std::slice::from_ref(&weights),
-                whisper::DTYPE,
-                device,
-            )
+            VarBuilder::from_mmaped_safetensors(std::slice::from_ref(&weights), dtype, device)
         }
         .map_err(|error| format!("Could not load Whisper weights: {error}"))
     }
@@ -514,6 +511,7 @@ impl Decoder {
             .map_err(candle_error)?;
         let no_speech = softmax(&no_speech_logits, 0)
             .and_then(|tensor| tensor.i(self.no_speech_token as usize))
+            .and_then(|tensor| tensor.to_dtype(DType::F32))
             .and_then(|tensor| tensor.to_scalar::<f32>())
             .map_err(candle_error)? as f64;
         let first_logits = last_logits(&self.model, &ys)?;
@@ -711,7 +709,10 @@ impl Decoder {
         if self.hotword_token_sequences.is_empty() {
             return Ok(logits);
         }
-        let mut values = logits.to_vec1::<f32>().map_err(candle_error)?;
+        let mut values = logits
+            .to_dtype(DType::F32)
+            .and_then(|tensor| tensor.to_vec1::<f32>())
+            .map_err(candle_error)?;
         let best = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         for (token, bias, max_gap) in
             hotword_bias_candidates(&self.hotword_token_sequences, sampled)
@@ -731,7 +732,10 @@ impl Decoder {
         tokens: &[u32],
         prefix_len: usize,
     ) -> Result<Tensor, String> {
-        let mut values = logits.to_vec1::<f32>().map_err(candle_error)?;
+        let mut values = logits
+            .to_dtype(DType::F32)
+            .and_then(|tensor| tensor.to_vec1::<f32>())
+            .map_err(candle_error)?;
         let timestamp_begin = self
             .no_timestamps_token
             .checked_add(1)
@@ -912,7 +916,10 @@ fn expand_beam(
     eot_token: u32,
     suppressed: &[bool],
 ) -> Result<Vec<Beam>, String> {
-    let mut logits = logits.to_vec1::<f32>().map_err(candle_error)?;
+    let mut logits = logits
+        .to_dtype(DType::F32)
+        .and_then(|tensor| tensor.to_vec1::<f32>())
+        .map_err(candle_error)?;
     for (index, value) in logits.iter_mut().enumerate() {
         if suppressed.get(index).copied().unwrap_or(false) {
             *value = f32::NEG_INFINITY;
@@ -1117,7 +1124,8 @@ fn detect_language(
         .forward(&tokens, &features, true)
         .map_err(candle_error)?;
     let logits = last_logits(&model, &ys)?
-        .to_vec1::<f32>()
+        .to_dtype(DType::F32)
+        .and_then(|tensor| tensor.to_vec1::<f32>())
         .map_err(candle_error)?;
     ids.into_iter()
         .filter_map(|id| logits.get(id as usize).map(|&logit| (id, logit)))
@@ -1232,7 +1240,9 @@ fn mel_tensor(
     } else {
         mel
     };
-    Tensor::from_vec(values, (1, config.num_mel_bins, frames), device).map_err(candle_error)
+    Tensor::from_vec(values, (1, config.num_mel_bins, frames), device)
+        .and_then(|tensor| tensor.to_dtype(inference_dtype(device)))
+        .map_err(candle_error)
 }
 
 fn read_mel_filters(bundle: &ModelBundle, num_mel_bins: usize) -> Result<Vec<f32>, String> {
@@ -1264,6 +1274,14 @@ fn inference_device() -> Result<Device, String> {
     return Device::new_cuda(0).map_err(|error| format!("Could not initialize CUDA: {error}"));
     #[allow(unreachable_code)]
     Ok(Device::Cpu)
+}
+
+fn inference_dtype(device: &Device) -> DType {
+    if matches!(device, Device::Metal(_)) {
+        DType::F16
+    } else {
+        whisper::DTYPE
+    }
 }
 
 fn device_name(device: &Device) -> &'static str {
@@ -1307,6 +1325,7 @@ fn log_tensor_stats(job_id: &str, name: &str, tensor: &Tensor) -> Result<(), Str
     }
     let values = tensor
         .flatten_all()
+        .and_then(|tensor| tensor.to_dtype(DType::F32))
         .and_then(|tensor| tensor.to_vec1::<f32>())
         .map_err(candle_error)?;
     let finite = values.iter().filter(|value| value.is_finite()).count();

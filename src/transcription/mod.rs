@@ -60,7 +60,7 @@ where
     );
     ensure_not_cancelled(&request.job_id, context)?;
 
-    emit_stage(&request.job_id, "Downloading", 0);
+    emit_stage(&request.job_id, "Checking model assets", 0);
     let assets_started = Instant::now();
     let model = ensure_model(&request.job_id, &request.model_name, context)?;
     let vad_model = request

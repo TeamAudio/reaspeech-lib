@@ -89,8 +89,9 @@ fn ensure_download(
     url: &str,
     description: &str,
 ) -> Result<PathBuf, String> {
+    let progress_message = download_progress_message(description);
     if destination.is_file() {
-        emit_stage(job_id, "Downloading", 100);
+        emit_stage(job_id, &progress_message, 100);
         return Ok(destination);
     }
 
@@ -104,7 +105,7 @@ fn ensure_download(
 
     fs::rename(&partial, &destination)
         .map_err(|error| format!("Could not finish model download: {error}"))?;
-    emit_stage(job_id, "Downloading", 100);
+    emit_stage(job_id, &progress_message, 100);
     Ok(destination)
 }
 
@@ -129,6 +130,7 @@ fn download_to_partial(
         File::create(partial).map_err(|error| format!("Could not create model file: {error}"))?;
     let mut downloaded = 0_u64;
     let mut buffer = vec![0_u8; 256 * 1024];
+    let progress_message = download_progress_message(description);
 
     loop {
         if context.cancellation.is_cancelled(job_id) {
@@ -149,10 +151,27 @@ fn download_to_partial(
         } else {
             downloaded.saturating_mul(100) / total
         };
-        emit_stage(job_id, "Downloading", percent);
+        emit_stage(job_id, &progress_message, percent);
     }
 
     output
         .flush()
         .map_err(|error| format!("Could not save model: {error}"))
+}
+
+fn download_progress_message(description: &str) -> String {
+    format!("Downloading {description}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::download_progress_message;
+
+    #[test]
+    fn download_progress_identifies_the_asset() {
+        assert_eq!(
+            download_progress_message("model weights"),
+            "Downloading model weights"
+        );
+    }
 }

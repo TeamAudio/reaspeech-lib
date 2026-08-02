@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -69,7 +70,9 @@ pub fn push_event(job_id: &str, event: Value) {
     let serialized = serde_json::to_string(&event).unwrap_or_else(|error| {
         format!(r#"{{"type":"error","error":"Could not serialize event: {error}"}}"#)
     });
-    let mut state = state().lock().expect("state mutex poisoned");
+    let mut state = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     state
         .events
         .entry(job_id.to_owned())
@@ -86,7 +89,7 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
     let job_id = format!("reaspeech-{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     state()
         .lock()
-        .expect("state mutex poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .events
         .insert(job_id.clone(), VecDeque::new());
     push_event(&job_id, json!({"type":"started", "jobId":job_id}));
@@ -105,15 +108,25 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
     let worker_context = context().clone();
     thread::spawn(move || {
         let started = Instant::now();
-        let result = transcription::run(&request, &worker_context, |segment| {
-            push_event(
-                &request.job_id,
-                json!({
-                    "type":"segment",
-                    "jobId":request.job_id,
-                    "segment":segment,
-                }),
-            );
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            transcription::run(&request, &worker_context, |segment| {
+                push_event(
+                    &request.job_id,
+                    json!({
+                        "type":"segment",
+                        "jobId":request.job_id,
+                        "segment":segment,
+                    }),
+                );
+            })
+        }))
+        .unwrap_or_else(|payload| {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            Err(format!("Transcription worker panicked: {detail}"))
         });
         if worker_context.cancellation.is_cancelled(&request.job_id) {
             push_event(
@@ -142,7 +155,9 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
 }
 
 fn poll(job_id: &str) -> String {
-    let mut state = state().lock().expect("state mutex poisoned");
+    let mut state = state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let event = state
         .events
         .get_mut(job_id)
@@ -161,7 +176,7 @@ fn poll(job_id: &str) -> String {
 fn cancel(job_id: &str) -> bool {
     let exists = state()
         .lock()
-        .expect("state mutex poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .events
         .contains_key(job_id);
     if exists {
@@ -175,7 +190,7 @@ fn return_string(value: impl AsRef<str>) -> *mut c_void {
     let mut slot = RETURN_VALUE
         .get_or_init(|| Mutex::new(CString::default()))
         .lock()
-        .expect("return value mutex poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *slot = CString::new(clean).expect("NUL characters were replaced");
     slot.as_ptr() as *mut c_void
 }

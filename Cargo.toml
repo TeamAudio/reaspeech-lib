@@ -35,10 +35,10 @@ symphonia = { version = "0.5", features = ["all"] }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"
 
 [profile.release]
-panic = "abort"
+panic = "unwind"
 
 [patch.crates-io]
 candle-transformers = { path = "vendor/candle-transformers" }

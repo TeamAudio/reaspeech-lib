@@ -12,21 +12,21 @@ impl Cancellation {
     pub fn cancel(&self, job_id: &str) {
         self.cancelled
             .lock()
-            .expect("cancellation mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(job_id.to_owned());
     }
 
     pub fn is_cancelled(&self, job_id: &str) -> bool {
         self.cancelled
             .lock()
-            .expect("cancellation mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(job_id)
     }
 
     pub fn finish(&self, job_id: &str) {
         self.cancelled
             .lock()
-            .expect("cancellation mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(job_id);
     }
 }

@@ -394,7 +394,12 @@ impl Decoder {
             .get_mut(no_timestamps_token as usize)
             .ok_or("Whisper no-timestamps token is outside the model vocabulary")?;
         *no_timestamps_entry = true;
-        let hotword_limit = model.config.max_target_positions / 2 - 1;
+        let hotword_limit = model
+            .config
+            .max_target_positions
+            .checked_div(2)
+            .and_then(|limit| limit.checked_sub(1))
+            .ok_or("Whisper max_target_positions is too small")?;
         let hotword_token_sequences = tokenize_hotwords(&tokenizer, hotwords, hotword_limit)?;
         let alignment_heads = match model.config.decoder_layers {
             12 => AlignmentHeads::small(),
@@ -533,8 +538,12 @@ impl Decoder {
             .config
             .max_target_positions
             .saturating_sub(prefix_len);
+        let maximum_steps = self.model.config.max_target_positions / 2;
+        if maximum_steps < 24 {
+            return Err("Whisper max_target_positions must be at least 48".into());
+        }
         let max_steps = ((audio_seconds * 8.0).ceil() as usize + 16)
-            .clamp(24, self.model.config.max_target_positions / 2)
+            .clamp(24, maximum_steps)
             .min(available_steps);
         for _ in 1..max_steps {
             ensure_not_cancelled(job_id, cancellation)?;
@@ -635,12 +644,12 @@ impl Decoder {
                 .decoder
                 .forward(&alignment_input, &audio_features, true)
                 .map_err(candle_error)?;
-            let n_frames = (audio_samples + whisper::HOP_LENGTH - 1) / whisper::HOP_LENGTH;
+            let n_frames = audio_samples.div_ceil(whisper::HOP_LENGTH);
             let raw = self
                 .model
                 .dtw_timestamps(
                     self.alignment_heads.clone(),
-                    NonZeroUsize::new(7).expect("non-zero DTW filter width"),
+                    NonZeroUsize::new(7).ok_or("DTW filter width must be non-zero")?,
                     n_frames,
                     prefix_len,
                 )
@@ -713,18 +722,29 @@ impl Decoder {
         prefix_len: usize,
     ) -> Result<Tensor, String> {
         let mut values = logits.to_vec1::<f32>().map_err(candle_error)?;
-        let timestamp_begin = self.no_timestamps_token + 1;
+        let timestamp_begin = self
+            .no_timestamps_token
+            .checked_add(1)
+            .ok_or("Whisper no-timestamps token is invalid")?;
+        let timestamp_begin = usize::try_from(timestamp_begin)
+            .map_err(|_| "Whisper timestamp token does not fit this platform")?;
+        if timestamp_begin > values.len() {
+            return Err(format!(
+                "Whisper timestamp token {timestamp_begin} is outside the logits vocabulary ({})",
+                values.len()
+            ));
+        }
         let sampled = &tokens[prefix_len.min(tokens.len())..];
         let last_is_timestamp = sampled
             .last()
-            .is_some_and(|token| *token >= timestamp_begin);
+            .is_some_and(|token| *token as usize >= timestamp_begin);
         let previous_is_timestamp = sampled
             .get(sampled.len().saturating_sub(2))
-            .is_some_and(|token| *token >= timestamp_begin);
+            .is_some_and(|token| *token as usize >= timestamp_begin);
 
         if last_is_timestamp {
             if previous_is_timestamp {
-                for value in values.iter_mut().skip(timestamp_begin as usize) {
+                for value in values.iter_mut().skip(timestamp_begin) {
                     *value = f32::NEG_INFINITY;
                 }
             } else {
@@ -737,29 +757,31 @@ impl Decoder {
         if let Some(last_timestamp) = sampled
             .iter()
             .rev()
-            .find(|token| **token >= timestamp_begin)
+            .find(|token| **token as usize >= timestamp_begin)
             .copied()
         {
             let minimum = if last_is_timestamp && !previous_is_timestamp {
                 last_timestamp
             } else {
-                last_timestamp + 1
+                last_timestamp
+                    .checked_add(1)
+                    .ok_or("Whisper timestamp token is invalid")?
             };
             for value in values
                 .iter_mut()
                 .take(minimum as usize)
-                .skip(timestamp_begin as usize)
+                .skip(timestamp_begin)
             {
                 *value = f32::NEG_INFINITY;
             }
         }
 
         if sampled.is_empty() {
-            for value in values.iter_mut().take(timestamp_begin as usize) {
+            for value in values.iter_mut().take(timestamp_begin) {
                 *value = f32::NEG_INFINITY;
             }
             // Match faster-whisper's default one-second maximum initial timestamp.
-            for value in values.iter_mut().skip((timestamp_begin + 50) as usize + 1) {
+            for value in values.iter_mut().skip(timestamp_begin.saturating_add(51)) {
                 *value = f32::NEG_INFINITY;
             }
         }
@@ -771,15 +793,15 @@ impl Decoder {
             .sum();
         let timestamp_probability: f64 = values
             .iter()
-            .skip(timestamp_begin as usize)
+            .skip(timestamp_begin)
             .map(|value| ((*value - max) as f64).exp() / denominator)
             .sum();
-        let best_text_probability = values[..timestamp_begin as usize]
+        let best_text_probability = values[..timestamp_begin]
             .iter()
             .map(|value| ((*value - max) as f64).exp() / denominator)
             .fold(0.0, f64::max);
         if timestamp_probability > best_text_probability {
-            for value in values.iter_mut().take(timestamp_begin as usize) {
+            for value in values.iter_mut().take(timestamp_begin) {
                 *value = f32::NEG_INFINITY;
             }
         }
@@ -1015,9 +1037,12 @@ fn normalized_score(beam: &Beam) -> f64 {
 
 fn last_logits(model: &whisper::model::Whisper, ys: &Tensor) -> Result<Tensor, String> {
     let (_, length, _) = ys.dims3().map_err(candle_error)?;
+    let last = length
+        .checked_sub(1)
+        .ok_or("Whisper decoder returned an empty token sequence")?;
     model
         .decoder
-        .final_linear(&ys.i((..1, length - 1..)).map_err(candle_error)?)
+        .final_linear(&ys.i((..1, last..)).map_err(candle_error)?)
         .and_then(|tensor| tensor.i(0))
         .and_then(|tensor| tensor.i(0))
         .map_err(candle_error)
@@ -1059,8 +1084,12 @@ fn detect_language(
         .to_vec1::<f32>()
         .map_err(candle_error)?;
     ids.into_iter()
-        .max_by(|left, right| logits[*left as usize].total_cmp(&logits[*right as usize]))
-        .ok_or_else(|| "Whisper tokenizer has no language tokens".into())
+        .filter_map(|id| logits.get(id as usize).map(|&logit| (id, logit)))
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|(id, _)| id)
+        .ok_or_else(|| {
+            "Whisper tokenizer has no language tokens within the model vocabulary".into()
+        })
 }
 
 fn detect_speech(

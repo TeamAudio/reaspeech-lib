@@ -14,6 +14,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # ort-sys stores downloaded native archives outside Cargo's target directory.
+  # Keep them beside the workspace so the Rust cache restores native libraries
+  # together with the build-script output that points to them.
+  ORT_CACHE_DIR: ${{ github.workspace }}/.ort-cache
 
 jobs:
   build:
@@ -44,7 +48,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust-with-ort
           key: ${{ matrix.artifact }}
+          cache-directories: .ort-cache
 
       - name: Test
         run: cargo test --locked
@@ -81,7 +87,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust-with-ort
           key: reaspeech-macos-arm64-metal
+          cache-directories: .ort-cache
 
       - name: Build
         run: cargo build --release --locked --features metal --target aarch64-apple-darwin
@@ -166,7 +174,9 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v1-rust-with-ort
           key: ${{ matrix.artifact }}-${{ matrix.cuda-version }}
+          cache-directories: .ort-cache
 
       - name: Build
         env:

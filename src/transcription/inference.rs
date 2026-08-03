@@ -79,6 +79,8 @@ struct DecodedPiece {
     text: String,
     probability: f32,
     words: Vec<DecodedWord>,
+    token_start: usize,
+    token_end: usize,
 }
 
 struct DecodedWord {
@@ -659,14 +661,14 @@ impl Decoder {
             if let Some(raw) = raw {
                 let aligned = <Self as PostProcessor>::label(self, &raw, &text_tokens)
                     .map_err(candle_error)?;
+                let aligned = aligned_word_token_starts(&aligned);
                 for piece in &mut pieces {
                     piece.words = aligned
                         .iter()
-                        .filter(|word| {
-                            let midpoint = (word.start + word.end) * 0.5;
-                            midpoint >= piece.start_seconds && midpoint <= piece.end_seconds
+                        .filter(|(_, token_start)| {
+                            *token_start >= piece.token_start && *token_start < piece.token_end
                         })
-                        .map(|word| DecodedWord {
+                        .map(|(word, _)| DecodedWord {
                             text: word.text.clone(),
                             start_seconds: word.start,
                             end_seconds: word.end,
@@ -822,6 +824,7 @@ impl Decoder {
         let mut pieces = Vec::new();
         let mut text_tokens = Vec::new();
         let mut text_log_probs = Vec::new();
+        let mut text_token_offset = 0;
         let mut start_seconds = 0.0f32;
         for (&token, &log_prob) in tokens.iter().zip(token_log_probs) {
             if token == self.eot_token {
@@ -830,6 +833,7 @@ impl Decoder {
             if token >= timestamp_begin {
                 let time = ((token - timestamp_begin) as f32 / 50.0).min(audio_seconds);
                 if !text_tokens.is_empty() && time > start_seconds {
+                    let token_end = text_token_offset + text_tokens.len();
                     let text = self
                         .tokenizer
                         .decode(&text_tokens, true)
@@ -839,6 +843,8 @@ impl Decoder {
                         end_seconds: time,
                         text,
                         probability: probability_from_log_probs(&text_log_probs),
+                        token_start: text_token_offset,
+                        token_end,
                         words: if include_words {
                             words_from_tokens(
                                 &self.tokenizer,
@@ -851,6 +857,7 @@ impl Decoder {
                             Vec::new()
                         },
                     });
+                    text_token_offset = token_end;
                     text_tokens.clear();
                     text_log_probs.clear();
                 }
@@ -861,6 +868,7 @@ impl Decoder {
             }
         }
         if !text_tokens.is_empty() {
+            let token_end = text_token_offset + text_tokens.len();
             let text = self
                 .tokenizer
                 .decode(&text_tokens, true)
@@ -870,6 +878,8 @@ impl Decoder {
                 end_seconds: audio_seconds,
                 text,
                 probability: probability_from_log_probs(&text_log_probs),
+                token_start: text_token_offset,
+                token_end,
                 words: if include_words {
                     words_from_tokens(
                         &self.tokenizer,
@@ -940,6 +950,20 @@ fn probability_for_word_tokens(word: &[u32], tokens: &[u32], log_probs: &[f64]) 
         .position(|candidate| candidate == word)
         .map(|start| probability_from_log_probs(&log_probs[start..start + word.len()]))
         .unwrap_or(0.0)
+}
+
+fn aligned_word_token_starts(
+    words: &[whisper::timestamps::Word],
+) -> Vec<(&whisper::timestamps::Word, usize)> {
+    let mut token_start = 0;
+    words
+        .iter()
+        .map(|word| {
+            let result = (word, token_start);
+            token_start += word.tokens.len();
+            result
+        })
+        .collect()
 }
 
 fn group_word_segments(
@@ -1428,10 +1452,43 @@ mod tests {
         assert_eq!(grouped.len(), 2);
     }
 
+    #[test]
+    fn aligned_words_keep_the_segment_containing_their_first_token() {
+        let words = vec![
+            aligned_word("previous.", &[10, 11]),
+            aligned_word("Next", &[12]),
+            aligned_word("segment", &[13, 14]),
+        ];
+
+        let indexed = aligned_word_token_starts(&words);
+        let first_piece = indexed
+            .iter()
+            .filter(|(_, token_start)| *token_start < 2)
+            .map(|(word, _)| word.text.as_str())
+            .collect::<Vec<_>>();
+        let second_piece = indexed
+            .iter()
+            .filter(|(_, token_start)| *token_start >= 2)
+            .map(|(word, _)| word.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_piece, ["previous."]);
+        assert_eq!(second_piece, ["Next", "segment"]);
+    }
+
     fn word_segment(text: &str, token: usize) -> whisper::timestamps::Segment {
         whisper::timestamps::Segment {
             text: text.into(),
             token_indices: vec![token],
+        }
+    }
+
+    fn aligned_word(text: &str, tokens: &[u32]) -> whisper::timestamps::Word {
+        whisper::timestamps::Word {
+            text: text.into(),
+            start: 0.0,
+            end: 0.0,
+            tokens: tokens.into(),
         }
     }
 

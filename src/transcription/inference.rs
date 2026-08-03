@@ -22,8 +22,14 @@ const MIN_SPEECH_SAMPLES: usize = SAMPLE_RATE / 4;
 const MIN_SILENCE_SAMPLES: usize = SAMPLE_RATE / 10;
 const SPEECH_PAD_SAMPLES: usize = SAMPLE_RATE * 30 / 1000;
 const DEFAULT_BEAM_SIZE: usize = 1;
-const HOTWORD_LOGIT_BIAS: f32 = 2.0;
-const HOTWORD_MAX_LOGIT_GAP: f32 = 5.0;
+
+// A start must already be acoustically plausible; continuation gets more help so
+// a recognized phrase can finish without making hotwords dominate unrelated audio.
+const HOTWORD_START_LOGIT_BIAS: f32 = 3.25;
+const HOTWORD_START_MAX_LOGIT_GAP: f32 = 3.0;
+const HOTWORD_CONTINUATION_LOGIT_BIAS: f32 = 5.0;
+const HOTWORD_CONTINUATION_MAX_LOGIT_GAP: f32 = 4.5;
+const HOTWORD_RESTART_COOLDOWN_TOKENS: usize = 8;
 
 pub struct TranscriptSegment {
     pub start_ms: i64,
@@ -707,10 +713,12 @@ impl Decoder {
         }
         let mut values = logits.to_vec1::<f32>().map_err(candle_error)?;
         let best = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        for token in hotword_bias_candidates(&self.hotword_token_sequences, sampled) {
+        for (token, bias, max_gap) in
+            hotword_bias_candidates(&self.hotword_token_sequences, sampled)
+        {
             if let Some(value) = values.get_mut(token as usize) {
-                if value.is_finite() && *value >= best - HOTWORD_MAX_LOGIT_GAP {
-                    *value += HOTWORD_LOGIT_BIAS;
+                if value.is_finite() && *value >= best - max_gap {
+                    *value += bias;
                 }
             }
         }
@@ -1355,23 +1363,43 @@ fn tokenize_hotwords(
     Ok(sequences)
 }
 
-fn hotword_bias_candidates(hotwords: &[Vec<u32>], sampled: &[u32]) -> Vec<u32> {
-    let mut candidates = Vec::new();
+fn hotword_bias_candidates(hotwords: &[Vec<u32>], sampled: &[u32]) -> Vec<(u32, f32, f32)> {
+    let mut candidates = std::collections::BTreeMap::new();
     for hotword in hotwords {
         let Some(&first) = hotword.first() else {
             continue;
         };
-        candidates.push(first);
+        let recently_completed = sampled
+            .windows(hotword.len())
+            .rposition(|window| window == hotword)
+            .is_some_and(|start| {
+                sampled.len() - (start + hotword.len()) <= HOTWORD_RESTART_COOLDOWN_TOKENS
+            });
+        if !recently_completed {
+            candidates
+                .entry(first)
+                .or_insert((HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP));
+        }
         for prefix_len in (1..hotword.len()).rev() {
             if sampled.ends_with(&hotword[..prefix_len]) {
-                candidates.push(hotword[prefix_len]);
+                candidates
+                    .entry(hotword[prefix_len])
+                    .and_modify(|candidate: &mut (f32, f32)| {
+                        candidate.0 = f32::max(candidate.0, HOTWORD_CONTINUATION_LOGIT_BIAS);
+                        candidate.1 = f32::max(candidate.1, HOTWORD_CONTINUATION_MAX_LOGIT_GAP);
+                    })
+                    .or_insert((
+                        HOTWORD_CONTINUATION_LOGIT_BIAS,
+                        HOTWORD_CONTINUATION_MAX_LOGIT_GAP,
+                    ));
                 break;
             }
         }
     }
-    candidates.sort_unstable();
-    candidates.dedup();
     candidates
+        .into_iter()
+        .map(|(token, (bias, max_gap))| (token, bias, max_gap))
+        .collect()
 }
 
 fn ensure_not_cancelled(job_id: &str, cancellation: &Cancellation) -> Result<(), String> {
@@ -1507,13 +1535,59 @@ mod tests {
     fn hotword_bias_follows_matching_token_sequences() {
         let hotwords = vec![vec![10, 11, 12], vec![20, 21]];
 
-        assert_eq!(hotword_bias_candidates(&hotwords, &[]), [10, 20]);
-        assert_eq!(hotword_bias_candidates(&hotwords, &[99, 10]), [10, 11, 20]);
+        assert_eq!(
+            hotword_bias_candidates(&hotwords, &[]),
+            [
+                (10, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP),
+                (20, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP)
+            ]
+        );
+        assert_eq!(
+            hotword_bias_candidates(&hotwords, &[99, 10]),
+            [
+                (10, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP),
+                (
+                    11,
+                    HOTWORD_CONTINUATION_LOGIT_BIAS,
+                    HOTWORD_CONTINUATION_MAX_LOGIT_GAP
+                ),
+                (20, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP)
+            ]
+        );
         assert_eq!(
             hotword_bias_candidates(&hotwords, &[99, 10, 11]),
-            [10, 12, 20]
+            [
+                (10, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP),
+                (
+                    12,
+                    HOTWORD_CONTINUATION_LOGIT_BIAS,
+                    HOTWORD_CONTINUATION_MAX_LOGIT_GAP
+                ),
+                (20, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP)
+            ]
         );
-        assert_eq!(hotword_bias_candidates(&hotwords, &[99, 20]), [10, 20, 21]);
+        assert_eq!(
+            hotword_bias_candidates(&hotwords, &[99, 20]),
+            [
+                (10, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP),
+                (20, HOTWORD_START_LOGIT_BIAS, HOTWORD_START_MAX_LOGIT_GAP),
+                (
+                    21,
+                    HOTWORD_CONTINUATION_LOGIT_BIAS,
+                    HOTWORD_CONTINUATION_MAX_LOGIT_GAP
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn completed_hotword_is_not_immediately_restarted() {
+        let hotwords = vec![vec![10, 11, 12], vec![20, 21]];
+
+        let candidates = hotword_bias_candidates(&hotwords, &[99, 10, 11, 12, 98]);
+
+        assert!(!candidates.iter().any(|(token, _, _)| *token == 10));
+        assert!(candidates.iter().any(|(token, _, _)| *token == 20));
     }
 
     #[test]

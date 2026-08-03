@@ -958,7 +958,11 @@ fn group_word_segments(
             let text = segment.text.trim();
             !text.is_empty() && ASCII_PUNCTUATION.contains(text)
         };
-        if with_space || punctuation || words.is_empty() {
+        if punctuation && !with_space && !words.is_empty() {
+            let word = words.last_mut().expect("checked above");
+            word.text.push_str(&segment.text);
+            word.token_indices.extend(segment.token_indices);
+        } else if with_space || words.is_empty() {
             words.push(segment);
         } else if let Some(word) = words.last_mut() {
             word.text.push_str(&segment.text);
@@ -1394,12 +1398,11 @@ mod tests {
 
         let grouped = group_word_segments(segments, false);
 
-        assert_eq!(grouped.len(), 3);
+        assert_eq!(grouped.len(), 2);
         assert_eq!(grouped[0].text, " You're");
         assert_eq!(grouped[0].token_indices, [0, 1]);
-        assert_eq!(grouped[1].text, " welcome");
-        assert_eq!(grouped[1].token_indices, [2, 3]);
-        assert_eq!(grouped[2].text, "!");
+        assert_eq!(grouped[1].text, " welcome!");
+        assert_eq!(grouped[1].token_indices, [2, 3, 4]);
     }
 
     #[test]

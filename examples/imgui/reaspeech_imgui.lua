@@ -1,5 +1,5 @@
 -- @description ReaSpeech: transcribe selected media items
--- @version 1.1
+-- @version 1.2
 -- @author ReaSpeech
 -- @about
 --   A small ReaImGui example for the ReaSpeech extension. Select one or more
@@ -485,11 +485,12 @@ local function render()
     reaper.ImGui_ProgressBar(ctx, state.progress, -1, 0, state.status)
     reaper.ImGui_Separator(ctx)
     reaper.ImGui_Text(ctx, "Results")
-    reaper.ImGui_BeginChild(ctx, "results", 0, 0)
-    render_results()
-    reaper.ImGui_EndChild(ctx)
+    if reaper.ImGui_BeginChild(ctx, "results", 0, 0) then
+      render_results()
+      reaper.ImGui_EndChild(ctx)
+    end
+    reaper.ImGui_End(ctx)
   end
-  reaper.ImGui_End(ctx)
 
   if open then
     reaper.defer(render)

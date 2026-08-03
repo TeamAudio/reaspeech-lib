@@ -405,12 +405,11 @@ local function render_results()
 
   for result_index, result in ipairs(state.results) do
     local suffix = result.elapsed_ms and (" (%.1f s)"):format(result.elapsed_ms / 1000) or ""
-    local flags = result == state.streaming_result
-        and reaper.ImGui_TreeNodeFlags_DefaultOpen()
-        or 0
+    local flags = reaper.ImGui_TreeNodeFlags_DefaultOpen()
     if reaper.ImGui_CollapsingHeader(
         ctx,
         result.job.label .. suffix .. "##" .. result_index,
+        nil,
         flags
     ) then
       if result.error then

@@ -114,11 +114,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows (CUDA 13, default)
+          - name: Windows (CUDA 13)
             os: windows-2022
             cuda-version: 13.1.0
             compute-cap: '75'
-            artifact: reaspeech-windows-x86_64-cuda
+            artifact: reaspeech-windows-x86_64-cuda13
             source: target/release/reaper_reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Windows (CUDA 12)
@@ -128,11 +128,11 @@ jobs:
             artifact: reaspeech-windows-x86_64-cuda12
             source: target/release/reaper_reaspeech.dll
             output: reaper_reaspeech.dll
-          - name: Linux (CUDA 13, default)
+          - name: Linux (CUDA 13)
             os: ubuntu-24.04
             cuda-version: 13.1.0
             compute-cap: '75'
-            artifact: reaspeech-linux-x86_64-cuda
+            artifact: reaspeech-linux-x86_64-cuda13
             source: target/release/libreaper_reaspeech.so
             output: reaper_reaspeech.so
           - name: Linux (CUDA 12)
@@ -195,4 +195,3 @@ jobs:
           name: ${{ matrix.artifact }}
           path: artifact/
           if-no-files-found: error
-

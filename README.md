@@ -182,9 +182,9 @@ extensions for:
 - macOS arm64 using Metal
 - Windows x86_64 and Linux x86_64 using CUDA 12 or CUDA 13
 
-CUDA 13 is the default CUDA build. Its artifact names end in `-cuda`; CUDA 12
-artifacts end in `-cuda12` and use CUDA Toolkit 12.5 for compatibility with
-older NVIDIA drivers. Every artifact contains the extension under the filename
+CUDA 13 artifact names end in `-cuda13`; CUDA 12 artifacts end in `-cuda12`
+and use CUDA Toolkit 12.5 for compatibility with older NVIDIA drivers. Every
+artifact contains the extension under the filename
 REAPER expects in `UserPlugins`, ready for future publication through the
 TeamAudio ReaPack repository.
 

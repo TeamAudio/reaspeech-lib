@@ -21,8 +21,8 @@ ARTIFACTS = {
     "reaspeech-macos-arm64-metal": "reaper_reaspeech.dylib",
     "reaspeech-windows-x86_64-cuda12": "reaper_reaspeech.dll",
     "reaspeech-linux-x86_64-cuda12": "reaper_reaspeech.so",
-    "reaspeech-windows-x86_64-cuda": "reaper_reaspeech.dll",
-    "reaspeech-linux-x86_64-cuda": "reaper_reaspeech.so",
+    "reaspeech-windows-x86_64-cuda13": "reaper_reaspeech.dll",
+    "reaspeech-linux-x86_64-cuda13": "reaper_reaspeech.so",
 }
 
 OUTPUTS = {
@@ -31,8 +31,8 @@ OUTPUTS = {
     "reaspeech-macos-arm64-metal": "reaper_reaspeech_metal.dylib",
     "reaspeech-windows-x86_64-cuda12": "reaper_reaspeech_cuda12.dll",
     "reaspeech-linux-x86_64-cuda12": "reaper_reaspeech_cuda12.so",
-    "reaspeech-windows-x86_64-cuda": "reaper_reaspeech_cuda13.dll",
-    "reaspeech-linux-x86_64-cuda": "reaper_reaspeech_cuda13.so",
+    "reaspeech-windows-x86_64-cuda13": "reaper_reaspeech_cuda13.dll",
+    "reaspeech-linux-x86_64-cuda13": "reaper_reaspeech_cuda13.so",
 }
 
 PACKAGES: dict[str, tuple[str, list[tuple[str, str]]]] = {

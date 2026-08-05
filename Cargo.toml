@@ -39,6 +39,7 @@ panic = "unwind"
 
 [profile.release]
 panic = "unwind"
+strip = "symbols"
 
 [patch.crates-io]
 candle-transformers = { path = "vendor/candle-transformers" }

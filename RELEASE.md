@@ -13,6 +13,8 @@ register the same ReaScript API, so loading multiple copies is unsupported.
 ## Prerequisites
 
 - Check out `reaspeech-lib` and `reascripts` side-by-side.
+- Install Python 3.10 or newer. On Windows, the standard `py` launcher can be
+  used in place of `python` in the commands below.
 - Install and authenticate the GitHub CLI (`gh auth login`).
 - Install `reapack-index`.
 - Ensure both repositories are clean and up to date.
@@ -22,10 +24,13 @@ register the same ReaScript API, so loading multiple copies is unsupported.
 1. Update the version in `Cargo.toml`, then commit and push the release source.
 2. Run the **Build** workflow for that commit and wait for every job to pass.
 3. Find its run ID with `gh run list --repo TeamAudio/reaspeech-lib --workflow Build`.
-4. Stage and inspect the release: `scripts/publish-reapack.sh --run-id RUN_ID`.
+4. Stage and inspect the release:
+
+       python scripts/publish_reapack.py --run-id RUN_ID
+
 5. Restore the staged files, then publish from a clean checkout:
 
-       scripts/publish-reapack.sh --run-id RUN_ID --release \
+       python scripts/publish_reapack.py --run-id RUN_ID --release \
          --changelog "Describe the release"
 
 6. Review the content and index commits in `reascripts`, then push that

@@ -35,32 +35,32 @@ OUTPUTS = {
     "reaspeech-linux-x86_64-cuda": "reaper_reaspeech_cuda13.so",
 }
 
-PACKAGES = {
+PACKAGES: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "ReaSpeech Lib (CPU).ext": (
         "ReaSpeech Lib (CPU; install only one backend)",
         [
-            "[win64] ReaSpeech/reaper_reaspeech_cpu.dll > reaper_reaspeech_cpu.dll",
-            "[linux64] ReaSpeech/reaper_reaspeech_cpu.so > reaper_reaspeech_cpu.so",
+            ("win64", "reaper_reaspeech_cpu.dll"),
+            ("linux64", "reaper_reaspeech_cpu.so"),
         ],
     ),
     "ReaSpeech Lib (Metal).ext": (
         "ReaSpeech Lib (Metal; install only one backend)",
         [
-            "[darwin-arm64] ReaSpeech/reaper_reaspeech_metal.dylib > reaper_reaspeech_metal.dylib",
+            ("darwin-arm64", "reaper_reaspeech_metal.dylib"),
         ],
     ),
     "ReaSpeech Lib (CUDA 12).ext": (
         "ReaSpeech Lib (CUDA 12; install only one backend)",
         [
-            "[win64] ReaSpeech/reaper_reaspeech_cuda12.dll > reaper_reaspeech_cuda12.dll",
-            "[linux64] ReaSpeech/reaper_reaspeech_cuda12.so > reaper_reaspeech_cuda12.so",
+            ("win64", "reaper_reaspeech_cuda12.dll"),
+            ("linux64", "reaper_reaspeech_cuda12.so"),
         ],
     ),
     "ReaSpeech Lib (CUDA 13).ext": (
         "ReaSpeech Lib (CUDA 13; install only one backend)",
         [
-            "[win64] ReaSpeech/reaper_reaspeech_cuda13.dll > reaper_reaspeech_cuda13.dll",
-            "[linux64] ReaSpeech/reaper_reaspeech_cuda13.so > reaper_reaspeech_cuda13.so",
+            ("win64", "reaper_reaspeech_cuda13.dll"),
+            ("linux64", "reaper_reaspeech_cuda13.so"),
         ],
     ),
 }
@@ -137,13 +137,32 @@ def validate_artifacts(path: Path) -> None:
             raise PublishError(f"missing artifact file: {expected}")
 
 
-def stage_packages(artifacts: Path, reascripts: Path, version: str, changelog: str) -> None:
-    extensions = reascripts / "Extensions"
-    output_dir = extensions / "ReaSpeech"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def stage_release_assets(artifacts: Path, destination: Path) -> list[Path]:
+    destination.mkdir(parents=True, exist_ok=True)
+    assets = []
     for artifact, output_name in OUTPUTS.items():
-        shutil.copy2(artifacts / artifact / ARTIFACTS[artifact], output_dir / output_name)
+        output = destination / output_name
+        shutil.copy2(artifacts / artifact / ARTIFACTS[artifact], output)
+        assets.append(output)
+    return assets
+
+
+def release_asset_url(tag: str, filename: str) -> str:
+    return f"https://github.com/{GITHUB_REPOSITORY}/releases/download/{tag}/{filename}"
+
+
+def stage_packages(reascripts: Path, version: str, changelog: str, tag: str) -> None:
+    extensions = reascripts / "Extensions"
+    extensions.mkdir(parents=True, exist_ok=True)
+
+    # Releases prior to GitHub asset hosting may have stored binaries here.
+    old_output_dir = extensions / "ReaSpeech"
+    for output_name in OUTPUTS.values():
+        old_output = old_output_dir / output_name
+        if old_output.is_file():
+            old_output.unlink()
+    if old_output_dir.is_dir() and not any(old_output_dir.iterdir()):
+        old_output_dir.rmdir()
 
     for filename, (description, provides) in PACKAGES.items():
         lines = [
@@ -153,16 +172,44 @@ def stage_packages(artifacts: Path, reascripts: Path, version: str, changelog: s
             "@changelog",
             f"  {changelog}",
             "@provides",
-            *(f"  {item}" for item in provides),
+            *(
+                f"  [{platform}] {filename} {release_asset_url(tag, filename)}"
+                for platform, filename in provides
+            ),
             "",
         ]
         (extensions / filename).write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
-def publish(reascripts: Path, version: str) -> None:
+def create_github_release(tag: str, version: str, changelog: str, assets: list[Path]) -> None:
+    if shutil.which("gh") is None:
+        raise PublishError("GitHub CLI (gh) is required for --release")
+
+    existing = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", GITHUB_REPOSITORY],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if existing.returncode == 0:
+        raise PublishError(
+            f"GitHub release {tag} already exists; refusing to replace its assets"
+        )
+
+    source_sha = run("git", "rev-parse", "HEAD", cwd=PROJECT_DIR, capture=True)
+    run(
+        "gh", "release", "create", tag,
+        *(str(asset) for asset in assets),
+        "--repo", GITHUB_REPOSITORY,
+        "--target", source_sha,
+        "--title", f"ReaSpeech Lib {version}",
+        "--notes", changelog,
+    )
+
+
+def publish_reapack(reascripts: Path, version: str) -> None:
     if shutil.which("reapack-index") is None:
         raise PublishError("reapack-index is required for --release")
-    run("git", "add", "Extensions", cwd=reascripts)
+    run("git", "add", "--all", "Extensions", cwd=reascripts)
     run("git", "commit", "-m", f"Update ReaSpeech Lib to {version}", cwd=reascripts)
     run("reapack-index", "--commit", reascripts)
 
@@ -185,6 +232,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--changelog", help="ReaPack changelog text")
     parser.add_argument(
+        "--tag",
+        help="GitHub release tag (default: vVERSION)",
+    )
+    parser.add_argument(
         "--release",
         action="store_true",
         help="commit staged files and run reapack-index",
@@ -197,25 +248,33 @@ def main() -> int:
     reascripts = args.reascripts.expanduser().resolve()
     version = package_version()
     changelog = args.changelog or f"ReaSpeech Lib {version}"
+    tag = args.tag or f"v{version}"
     validate_reascripts(reascripts, args.release)
 
-    if args.artifacts_dir:
-        artifacts = args.artifacts_dir.expanduser().resolve()
-        validate_artifacts(artifacts)
-        stage_packages(artifacts, reascripts, version, changelog)
-    else:
-        with tempfile.TemporaryDirectory(prefix="reaspeech-reapack-") as temp:
-            artifacts = Path(temp)
+    with tempfile.TemporaryDirectory(prefix="reaspeech-reapack-") as temp:
+        temp_dir = Path(temp)
+        if args.artifacts_dir:
+            artifacts = args.artifacts_dir.expanduser().resolve()
+        else:
+            artifacts = temp_dir / "workflow-artifacts"
             download_artifacts(args.run_id, artifacts)
-            validate_artifacts(artifacts)
-            stage_packages(artifacts, reascripts, version, changelog)
+        validate_artifacts(artifacts)
+        assets = stage_release_assets(artifacts, temp_dir / "release-assets")
+        stage_packages(reascripts, version, changelog, tag)
 
-    print(f"Staged ReaSpeech Lib {version} in {reascripts / 'Extensions'}")
-    if args.release:
-        publish(reascripts, version)
-        print("Release committed and indexed. Review the commits, then push reascripts manually.")
-    else:
-        print("Review the files, then clean/restore reascripts and rerun with --release.")
+        print(f"Staged ReaSpeech Lib {version} descriptors in {reascripts / 'Extensions'}")
+        if args.release:
+            create_github_release(tag, version, changelog, assets)
+            publish_reapack(reascripts, version)
+            print(
+                f"Published {tag} assets and indexed ReaPack. "
+                "Review the reascripts commits, then push them manually."
+            )
+        else:
+            print(
+                f"Release assets would be uploaded to {GITHUB_REPOSITORY} as {tag}. "
+                "Review the descriptors, then clean/restore reascripts and rerun with --release."
+            )
     return 0
 
 

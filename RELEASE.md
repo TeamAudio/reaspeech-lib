@@ -7,6 +7,11 @@ runtime. Users therefore choose the backend package explicitly. Each package
 uses a backend-specific extension filename so the ReaPack index can manage the
 packages independently.
 
+The binaries are stored as assets on a versioned GitHub release in
+`TeamAudio/reaspeech-lib`. The `reascripts` repository contains only package
+descriptors with explicit asset download URLs, keeping large binaries out of
+its Git history.
+
 Do not install more than one ReaSpeech Lib backend at a time. All backends
 register the same ReaScript API, so loading multiple copies is unsupported.
 
@@ -28,13 +33,15 @@ register the same ReaScript API, so loading multiple copies is unsupported.
 
        python scripts/publish_reapack.py --run-id RUN_ID
 
-5. Restore the staged files, then publish from a clean checkout:
+5. Restore the staged descriptors, then publish from a clean checkout:
 
        python scripts/publish_reapack.py --run-id RUN_ID --release \
          --changelog "Describe the release"
 
-6. Review the content and index commits in `reascripts`, then push that
-   repository manually.
+   This creates the `vVERSION` GitHub release and uploads all seven binaries.
+   Pass `--tag TAG` to override the tag. Existing releases are never replaced.
+6. Review the descriptor and index commits in `reascripts`, then push that
+   repository manually. No extension binaries are committed to `reascripts`.
 
 The script deliberately does not push either repository. `--release` also
 refuses to run over existing tracked changes in `reascripts`. For testing

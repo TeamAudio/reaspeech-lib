@@ -188,6 +188,9 @@ older NVIDIA drivers. Every artifact contains the extension under the filename
 REAPER expects in `UserPlugins`, ready for future publication through the
 TeamAudio ReaPack repository.
 
+Releases are published locally rather than by GitHub Actions. See
+[`RELEASE.md`](RELEASE.md) for the backend-package design and release process.
+
 An Intel macOS build is not currently produced because the pinned ONNX Runtime
 release does not provide prebuilt `x86_64-apple-darwin` binaries.
 

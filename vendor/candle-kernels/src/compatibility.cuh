@@ -19,10 +19,8 @@ __device__ __forceinline__ __half __hmin_nan(__half a, __half b) {
 }
 #endif
 
-// CUDA 12.x provides a device-wide atomicAdd(double*, double) unconditionally
-// (via NV_IF_ELSE_TARGET in sm_60_atomic_functions.hpp), so only polyfill it
-// here when building against older CUDA toolkits that lack it.
-#if __CUDA_ARCH__ < 600 && __CUDACC_VER_MAJOR__ < 12
+// atomicAdd(double*, double) requires sm_60+ natively; polyfill for older archs.
+#if __CUDA_ARCH__ < 600
 // Copied from https://docs.nvidia.com/cuda/cuda-c-programming-guide/#atomic-functions
 __device__ double atomicAdd(double* address, double val) {
     unsigned long long int* address_as_ull = (unsigned long long int*)address;

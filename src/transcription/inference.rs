@@ -292,7 +292,7 @@ where
                 device.synchronize().map_err(candle_error)?;
             }
             profile_job(job_id, profiling, "chunk mel", mel_started.elapsed());
-            let (pieces, no_speech) = decoder.decode(
+            let (pieces, no_speech, average_log_probability) = decoder.decode(
                 &mel,
                 chunk.end - chunk.start,
                 words,
@@ -310,7 +310,7 @@ where
                     chunk_started.elapsed()
                 ),
             );
-            if no_speech < whisper::NO_SPEECH_THRESHOLD {
+            if !should_skip_for_no_speech(no_speech, average_log_probability) {
                 for piece in pieces {
                     if piece.text.trim().is_empty() {
                         continue;
@@ -455,7 +455,7 @@ impl Decoder {
         total_samples: usize,
         job_id: &str,
         cancellation: &Cancellation,
-    ) -> Result<(Vec<DecodedPiece>, f64), String> {
+    ) -> Result<(Vec<DecodedPiece>, f64, f64), String> {
         let profiling = profiling_enabled();
         let mut profile = DecoderProfile::default();
         self.model.reset_kv_cache();
@@ -627,6 +627,8 @@ impl Decoder {
             .ok_or("Whisper beam search returned no candidates")?;
         self.model = best.model.clone();
         let generated = &best.tokens[prefix_len..];
+        let average_log_probability =
+            average_log_probability(generated, &best.token_log_probs, self.eot_token);
         let mut pieces = self.timestamped_pieces(
             generated,
             &best.token_log_probs,
@@ -704,7 +706,7 @@ impl Decoder {
                 ),
             );
         }
-        Ok((pieces, no_speech))
+        Ok((pieces, no_speech, average_log_probability))
     }
 
     fn apply_hotword_bias(&self, logits: Tensor, sampled: &[u32]) -> Result<Tensor, String> {
@@ -947,6 +949,21 @@ fn probability_from_log_probs(log_probs: &[f64]) -> f32 {
     }
     let mean = log_probs.iter().sum::<f64>() / log_probs.len() as f64;
     mean.exp().clamp(0.0, 1.0) as f32
+}
+
+fn average_log_probability(tokens: &[u32], log_probs: &[f64], eot_token: u32) -> f64 {
+    let text_token_count = tokens
+        .iter()
+        .position(|token| *token == eot_token)
+        .unwrap_or(tokens.len());
+    let scored_token_count =
+        (text_token_count + usize::from(text_token_count < tokens.len())).min(log_probs.len());
+    log_probs[..scored_token_count].iter().sum::<f64>() / (text_token_count + 1) as f64
+}
+
+fn should_skip_for_no_speech(no_speech_probability: f64, average_log_probability: f64) -> bool {
+    no_speech_probability > whisper::NO_SPEECH_THRESHOLD
+        && average_log_probability < whisper::LOGPROB_THRESHOLD
 }
 
 fn probability_for_word_tokens(word: &[u32], tokens: &[u32], log_probs: &[f64]) -> f32 {
@@ -1436,6 +1453,33 @@ mod tests {
 
         assert!((probability - 0.6).abs() < f32::EPSILON);
         assert_eq!(probability_from_log_probs(&[]), 0.0);
+    }
+
+    #[test]
+    fn average_log_probability_includes_end_of_text() {
+        let eot = 99;
+        let average = average_log_probability(&[10, 11, eot], &[-0.3, -0.6, -0.9], eot);
+
+        assert!((average - -0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn average_log_probability_reserves_end_of_text_when_generation_is_truncated() {
+        let average = average_log_probability(&[10, 11], &[-0.3, -0.6], 99);
+
+        assert!((average - -0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn skips_only_low_confidence_chunks_with_high_no_speech_probability() {
+        assert!(should_skip_for_no_speech(0.7, -1.1));
+        assert!(!should_skip_for_no_speech(0.7, -0.9));
+        assert!(!should_skip_for_no_speech(0.5, -1.1));
+        assert!(!should_skip_for_no_speech(
+            whisper::NO_SPEECH_THRESHOLD,
+            -1.1
+        ));
+        assert!(!should_skip_for_no_speech(0.7, whisper::LOGPROB_THRESHOLD));
     }
 
     #[test]

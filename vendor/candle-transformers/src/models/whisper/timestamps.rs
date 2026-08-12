@@ -174,6 +174,11 @@ impl AlignmentHeads {
         }
         .narrow(3, 0, n_frames.min(super::N_FRAMES) / 2)?;
 
+        // Whisper's alignment post-processing is performed in f32. In particular,
+        // softmax and the variance normalization below are sensitive to the loss of
+        // precision when the model itself runs in f16.
+        let weights = weights.to_dtype(candle::DType::F32)?;
+
         // Normalize
         let weights = softmax_last_dim(&weights.contiguous()?)?;
 

@@ -1,4 +1,6 @@
 use crate::common::WorkerContext;
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFunction};
 use std::fs::File;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -84,7 +86,7 @@ pub fn decode_audio_16khz_mono(
     if mono.is_empty() {
         return Err("No decodable audio samples were found".into());
     }
-    Ok(resample_linear(&mono, sample_rate, WHISPER_SAMPLE_RATE))
+    resample_windowed_sinc(&mono, sample_rate, WHISPER_SAMPLE_RATE)
 }
 
 fn append_mono_samples(
@@ -113,18 +115,51 @@ fn append_mono_samples(
     }
 }
 
-fn resample_linear(samples: &[f32], source_rate: u32, destination_rate: u32) -> Vec<f32> {
+fn resample_windowed_sinc(
+    samples: &[f32],
+    source_rate: u32,
+    destination_rate: u32,
+) -> Result<Vec<f32>, String> {
     if source_rate == destination_rate {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
-    let ratio = source_rate as f64 / destination_rate as f64;
-    let output_length = (samples.len() as f64 / ratio).ceil() as usize;
-    (0..output_length)
-        .map(|index| {
-            let position = index as f64 * ratio;
-            let left = (position.floor() as usize).min(samples.len() - 1);
-            let right = (left + 1).min(samples.len() - 1);
-            samples[left] + (samples[right] - samples[left]) * (position - left as f64) as f32
-        })
-        .collect()
+
+    let ratio = destination_rate as f64 / source_rate as f64;
+    let parameters = SincInterpolationParameters::new(256, WindowFunction::BlackmanHarris2);
+    let mut resampler = Async::<f32>::new_sinc(ratio, 1.0, &parameters, 1024, 1, FixedAsync::Input)
+        .map_err(|error| format!("Could not initialize the audio resampler: {error}"))?;
+    let input = InterleavedSlice::new(samples, 1, samples.len())
+        .map_err(|error| format!("Could not prepare audio for resampling: {error}"))?;
+    let output = resampler
+        .process_all(&input, samples.len(), None)
+        .map_err(|error| format!("Could not resample audio: {error}"))?;
+
+    Ok(output.take_data())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resample_windowed_sinc;
+
+    #[test]
+    fn resampling_at_the_same_rate_preserves_samples() {
+        let samples = vec![-1.0, -0.25, 0.5, 1.0];
+
+        assert_eq!(
+            resample_windowed_sinc(&samples, 16_000, 16_000).unwrap(),
+            samples
+        );
+    }
+
+    #[test]
+    fn windowed_sinc_resampling_preserves_clip_duration() {
+        let samples: Vec<f32> = (0..48_000)
+            .map(|index| (index as f32 * std::f32::consts::TAU * 440.0 / 48_000.0).sin())
+            .collect();
+
+        let output = resample_windowed_sinc(&samples, 48_000, 16_000).unwrap();
+
+        assert_eq!(output.len(), 16_000);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
 }

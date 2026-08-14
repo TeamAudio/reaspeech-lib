@@ -195,6 +195,31 @@ fn return_string(value: impl AsRef<str>) -> *mut c_void {
     slot.as_ptr() as *mut c_void
 }
 
+fn write_output(value: &str, output: *mut c_void, output_size: c_int) {
+    if output.is_null() || output_size <= 0 {
+        return;
+    }
+    let bytes = value.as_bytes();
+    let length = bytes.len().min(output_size as usize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast::<u8>(), length);
+        *output.cast::<u8>().add(length) = 0;
+    }
+}
+
+fn return_start_result(
+    result: Result<String, String>,
+    job_id_out: *mut c_void,
+    job_id_out_size: c_int,
+) -> *mut c_void {
+    let (success, value) = match result {
+        Ok(job_id) => (true, job_id),
+        Err(error) => (false, error),
+    };
+    write_output(&value, job_id_out, job_id_out_size);
+    success as isize as *mut c_void
+}
+
 unsafe fn string_arg(args: &[*mut c_void], index: usize) -> Result<&str, String> {
     let ptr = args
         .get(index)
@@ -217,8 +242,7 @@ unsafe fn args<'a>(arglist: *mut *mut c_void, count: c_int) -> &'a [*mut c_void]
 unsafe fn optional_bool_arg(args: &[*mut c_void], index: usize) -> bool {
     args.get(index)
         .copied()
-        .filter(|ptr| !ptr.is_null())
-        .is_some_and(|ptr| *ptr.cast::<bool>())
+        .is_some_and(|value| value as isize != 0)
 }
 
 pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
@@ -244,10 +268,11 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
             },
         )
     })();
-    match result {
-        Ok(job_id) => return_string(job_id),
-        Err(error) => return_string(format!("ERROR: {error}")),
-    }
+    return_start_result(
+        result,
+        args.get(7).copied().unwrap_or(std::ptr::null_mut()),
+        args.get(8).copied().unwrap_or(std::ptr::null_mut()) as isize as c_int,
+    )
 }
 
 pub unsafe extern "C" fn start_ex_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
@@ -259,10 +284,11 @@ pub unsafe extern "C" fn start_ex_vararg(arglist: *mut *mut c_void, count: c_int
             .map_err(|error| format!("invalid job_options_json: {error}"))?;
         start(audio, options)
     })();
-    match result {
-        Ok(job_id) => return_string(job_id),
-        Err(error) => return_string(format!("ERROR: {error}")),
-    }
+    return_start_result(
+        result,
+        args.get(2).copied().unwrap_or(std::ptr::null_mut()),
+        args.get(3).copied().unwrap_or(std::ptr::null_mut()) as isize as c_int,
+    )
 }
 
 pub unsafe extern "C" fn poll_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
@@ -282,31 +308,40 @@ pub extern "C" fn start_native(
     audio_path: *const c_char,
     model_name: *const c_char,
     language: *const c_char,
-    translate: *const bool,
-    vad: *const bool,
-    words: *const bool,
+    translate: bool,
+    vad: bool,
+    words: bool,
     hotwords: *const c_char,
-) -> *const c_char {
+    job_id_out: *mut c_char,
+    job_id_out_size: c_int,
+) -> bool {
     let args = [
         audio_path as *mut c_void,
         model_name as *mut c_void,
         language as *mut c_void,
-        translate as *mut c_void,
-        vad as *mut c_void,
-        words as *mut c_void,
+        translate as isize as *mut c_void,
+        vad as isize as *mut c_void,
+        words as isize as *mut c_void,
         hotwords as *mut c_void,
+        job_id_out as *mut c_void,
+        job_id_out_size as isize as *mut c_void,
     ];
-    unsafe { start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char }
+    unsafe { !start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int).is_null() }
 }
 
 pub extern "C" fn start_ex_native(
     audio_path: *const c_char,
     job_options_json: *const c_char,
-) -> *const c_char {
-    let args = [audio_path as *mut c_void, job_options_json as *mut c_void];
-    unsafe {
-        start_ex_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int) as *const c_char
-    }
+    job_id_out: *mut c_char,
+    job_id_out_size: c_int,
+) -> bool {
+    let args = [
+        audio_path as *mut c_void,
+        job_options_json as *mut c_void,
+        job_id_out as *mut c_void,
+        job_id_out_size as isize as *mut c_void,
+    ];
+    unsafe { !start_ex_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int).is_null() }
 }
 
 pub extern "C" fn poll_native(job_id: *const c_char) -> *const c_char {
@@ -321,11 +356,42 @@ pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
 
 #[cfg(test)]
 mod tests {
-    use super::{optional_bool_arg, poll, push_event, state, validate_options, JobOptions};
+    use super::{
+        optional_bool_arg, poll, push_event, state, validate_options, write_output, JobOptions,
+    };
     use serde_json::json;
     use std::collections::VecDeque;
-    use std::ffi::c_void;
+    use std::ffi::{c_int, c_void};
     use std::ptr::null_mut;
+
+    #[test]
+    fn writes_bounded_output_string() {
+        let mut output = [b'x'; 5];
+        write_output(
+            "reaspeech-1",
+            output.as_mut_ptr().cast(),
+            output.len() as c_int,
+        );
+        assert_eq!(&output, b"reas\0");
+    }
+
+    #[test]
+    fn start_result_writes_error_to_need_big_buffer() {
+        let mut output = [0_u8; 64];
+        let result = super::return_start_result(
+            Err("test error".to_owned()),
+            output.as_mut_ptr().cast(),
+            output.len() as c_int,
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            std::ffi::CStr::from_bytes_until_nul(&output)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "test error"
+        );
+    }
 
     #[test]
     fn polling_is_fifo_and_empty_when_drained() {
@@ -355,13 +421,7 @@ mod tests {
 
     #[test]
     fn omitted_optional_booleans_default_to_false() {
-        let enabled = true;
-        let args = [
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            &enabled as *const bool as *mut c_void,
-        ];
+        let args = [null_mut(), null_mut(), null_mut(), 1_isize as *mut c_void];
         unsafe {
             assert!(optional_bool_arg(&args, 3));
             assert!(!optional_bool_arg(&args, 4));

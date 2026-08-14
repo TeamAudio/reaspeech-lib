@@ -90,7 +90,8 @@ local function start_next_job()
 
   state.progress = 0
   state.status = "Starting " .. state.current.label
-  state.job_id = reaper.ReaSpeech_Start(
+  local ok
+  ok, state.job_id = reaper.ReaSpeech_Start(
     state.current.path,
     MODELS[state.model_index],
     LANGUAGES[state.language_index],
@@ -99,10 +100,10 @@ local function start_next_job()
     state.words,
     state.hotwords
   )
-  if state.job_id:sub(1, 6) == "ERROR:" then
+  if not ok then
     state.results[#state.results + 1] = {
       job = state.current,
-      error = state.job_id:sub(8),
+      error = state.job_id,
     }
     start_next_job()
   end

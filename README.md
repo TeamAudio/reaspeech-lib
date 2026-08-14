@@ -6,8 +6,8 @@ transcription engine to Lua/ReaScript without blocking REAPER's main thread.
 ## Lua API
 
 ```lua
-job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)
-job_id = reaper.ReaSpeech_StartEx(audio_path, job_options_json)
+retval, job_id = reaper.ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)
+retval, job_id = reaper.ReaSpeech_StartEx(audio_path, job_options_json)
 event_json = reaper.ReaSpeech_Poll(job_id)
 accepted = reaper.ReaSpeech_Cancel(job_id)
 ```
@@ -16,10 +16,13 @@ accepted = reaper.ReaSpeech_Cancel(job_id)
 
 | Function | Returns | Description |
 | --- | --- | --- |
-| `ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)` | Job ID or `ERROR: ...` | Starts a job using convenient positional arguments. Only `audio_path` and `model` are required. |
-| `ReaSpeech_StartEx(audio_path, job_options_json)` | Job ID or `ERROR: ...` | Starts a job using a JSON `JobOptions` object. |
+| `ReaSpeech_Start(audio_path, model, language, translate, vad, words, hotwords)` | Boolean, job ID or error | Starts a job using convenient positional arguments. Only `audio_path` and `model` are required. |
+| `ReaSpeech_StartEx(audio_path, job_options_json)` | Boolean, job ID or error | Starts a job using a JSON `JobOptions` object. |
 | `ReaSpeech_Poll(job_id)` | JSON event or `""` | Removes and returns the next queued event. An empty string means no event is currently ready. |
 | `ReaSpeech_Cancel(job_id)` | Boolean | Requests cancellation. Returns `true` when the job exists. |
+
+When a start function returns `false`, its second return value contains the
+error message instead of a job ID.
 
 Only `audio_path` and `model` are required. `language` defaults to automatic
 language detection, while `translate`, `vad`, and `words` default to `false`.
@@ -28,7 +31,11 @@ be favored during recognition. For example:
 
 ```lua
 local hotwords = "ReaSpeech, REAPER, Cockos, spectral edit"
-local job_id = reaper.ReaSpeech_Start(path, "small", "en", false, true, false, hotwords)
+local ok, job_id = reaper.ReaSpeech_Start(path, "small", "en", false, true, false, hotwords)
+if not ok then
+  reaper.ShowMessageBox(job_id, "ReaSpeech", 0)
+  return
+end
 ```
 
 Hotwords are hints rather than a restricted vocabulary or guaranteed output.
@@ -60,7 +67,11 @@ local options = [[{
   "beamSize": 3,
   "hotwords": "ReaSpeech, REAPER, Cockos"
 }]]
-local job_id = reaper.ReaSpeech_StartEx(path, options)
+local ok, job_id = reaper.ReaSpeech_StartEx(path, options)
+if not ok then
+  reaper.ShowMessageBox(job_id, "ReaSpeech", 0)
+  return
+end
 ```
 
 `model` is `small`, `medium`, `large-v3`, or `large-v3-turbo`.

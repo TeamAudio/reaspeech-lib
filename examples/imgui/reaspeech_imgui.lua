@@ -6,10 +6,10 @@
 --   media items, choose the recognition options, and click Transcribe.
 --   Requires ReaImGui and reaper_reaspeech in REAPER's UserPlugins directory.
 
-local TITLE = "ReaSpeech - Selected Media Items"
 local script_dir = debug.getinfo(1, "S").source:match("^@(.+[\\/])")
 local json = dofile((script_dir or "") .. "json.lua")
 
+local TITLE = "ReaSpeech - Selected Media Items"
 local MODELS = {"small", "medium", "large-v3", "large-v3-turbo"}
 local TURBO_INDEX = 4
 local LANGUAGES = {

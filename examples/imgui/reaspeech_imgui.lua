@@ -7,6 +7,9 @@
 --   Requires ReaImGui and reaper_reaspeech in REAPER's UserPlugins directory.
 
 local TITLE = "ReaSpeech - Selected Media Items"
+local script_dir = debug.getinfo(1, "S").source:match("^@(.+[\\/])")
+local json = dofile((script_dir or "") .. "json.lua")
+
 local MODELS = {"small", "medium", "large-v3", "large-v3-turbo"}
 local TURBO_INDEX = 4
 local LANGUAGES = {
@@ -29,146 +32,6 @@ end
 if not reaper.ReaSpeech_Start then
   reaper.MB("The ReaSpeech extension is not loaded. Install it in REAPER's UserPlugins directory and restart REAPER.", TITLE, 0)
   return
-end
-
--- The extension returns JSON strings. This compact decoder is sufficient for
--- all JSON values and keeps the example independent of third-party Lua modules.
-local function decode_json(input)
-  local position = 1
-
-  local function fail(message)
-    error(("JSON error at byte %d: %s"):format(position, message), 0)
-  end
-
-  local function skip_space()
-    local _, last = input:find("^[ \n\r\t]*", position)
-    position = (last or position - 1) + 1
-  end
-
-  local parse_value
-
-  local function parse_string()
-    position = position + 1
-    local parts = {}
-    local start = position
-
-    while position <= #input do
-      local byte = input:byte(position)
-      if byte == 34 then
-        parts[#parts + 1] = input:sub(start, position - 1)
-        position = position + 1
-        return table.concat(parts)
-      elseif byte == 92 then
-        parts[#parts + 1] = input:sub(start, position - 1)
-        local escape = input:sub(position + 1, position + 1)
-        local replacements = {
-          ['"'] = '"', ["\\"] = "\\", ["/"] = "/",
-          b = "\b", f = "\f", n = "\n", r = "\r", t = "\t",
-        }
-        if escape == "u" then
-          local hex = input:sub(position + 2, position + 5)
-          local codepoint = tonumber(hex, 16)
-          if not codepoint or #hex ~= 4 then fail("invalid Unicode escape") end
-          position = position + 6
-          if codepoint >= 0xD800 and codepoint <= 0xDBFF
-              and input:sub(position, position + 1) == "\\u" then
-            local low = tonumber(input:sub(position + 2, position + 5), 16)
-            if low and low >= 0xDC00 and low <= 0xDFFF then
-              codepoint = 0x10000 + (codepoint - 0xD800) * 0x400 + low - 0xDC00
-              position = position + 6
-            end
-          end
-          parts[#parts + 1] = utf8.char(codepoint)
-          start = position
-        elseif replacements[escape] then
-          parts[#parts + 1] = replacements[escape]
-          position = position + 2
-          start = position
-        else
-          fail("invalid string escape")
-        end
-      elseif byte < 32 then
-        fail("control character in string")
-      else
-        position = position + 1
-      end
-    end
-    fail("unterminated string")
-  end
-
-  local function parse_array()
-    local result = {}
-    position = position + 1
-    skip_space()
-    if input:sub(position, position) == "]" then
-      position = position + 1
-      return result
-    end
-    while true do
-      result[#result + 1] = parse_value()
-      skip_space()
-      local separator = input:sub(position, position)
-      position = position + 1
-      if separator == "]" then return result end
-      if separator ~= "," then fail("expected ',' or ']'") end
-      skip_space()
-    end
-  end
-
-  local function parse_object()
-    local result = {}
-    position = position + 1
-    skip_space()
-    if input:sub(position, position) == "}" then
-      position = position + 1
-      return result
-    end
-    while true do
-      if input:sub(position, position) ~= '"' then fail("expected object key") end
-      local key = parse_string()
-      skip_space()
-      if input:sub(position, position) ~= ":" then fail("expected ':'") end
-      position = position + 1
-      result[key] = parse_value()
-      skip_space()
-      local separator = input:sub(position, position)
-      position = position + 1
-      if separator == "}" then return result end
-      if separator ~= "," then fail("expected ',' or '}'") end
-      skip_space()
-    end
-  end
-
-  function parse_value()
-    skip_space()
-    local character = input:sub(position, position)
-    if character == '"' then return parse_string() end
-    if character == "{" then return parse_object() end
-    if character == "[" then return parse_array() end
-    if input:sub(position, position + 3) == "true" then
-      position = position + 4
-      return true
-    end
-    if input:sub(position, position + 4) == "false" then
-      position = position + 5
-      return false
-    end
-    if input:sub(position, position + 3) == "null" then
-      position = position + 4
-      return nil
-    end
-    local token = input:match("^-?%d+%.?%d*[eE]?[+-]?%d*", position)
-    if token then
-      position = position + #token
-      return tonumber(token)
-    end
-    fail("unexpected value")
-  end
-
-  local value = parse_value()
-  skip_space()
-  if position <= #input then fail("trailing data") end
-  return value
 end
 
 local function file_name(path)
@@ -320,7 +183,7 @@ local function poll()
   while true do
     local event_json = reaper.ReaSpeech_Poll(state.job_id)
     if event_json == "" then return end
-    local ok, event = pcall(decode_json, event_json)
+    local ok, event = pcall(json.decode, event_json)
     if not ok then
       state.queue = {}
       state.job_id = nil

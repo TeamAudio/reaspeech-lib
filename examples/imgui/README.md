@@ -21,9 +21,12 @@ recognition.
 
 ## Install and run
 
-In REAPER, open **Actions > Show action list**, choose **New action > Load
-ReaScript**, and select `reaspeech_imgui.lua`. Select one or more audio items
-and run the action.
+Copy `reaspeech_imgui.lua` and `json.lua` into the same directory. In REAPER,
+open **Actions > Show action list**, choose **New action > Load ReaScript**, and
+select `reaspeech_imgui.lua`. Select one or more audio items and run the action.
+
+`json.lua` is vendored from [rxi/json.lua](https://github.com/rxi/json.lua) and
+is distributed under its embedded MIT license.
 
 The example sends each active take's underlying source file to ReaSpeech. It
 does not render item fades, take effects, stretch markers, or other project

@@ -1,4 +1,4 @@
-mod api;
+pub mod api;
 mod common;
 mod config;
 mod transcription;

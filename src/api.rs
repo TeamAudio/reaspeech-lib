@@ -1,7 +1,6 @@
 use crate::common::WorkerContext;
 use crate::transcription::{self, Request};
-use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -13,7 +12,7 @@ use std::time::Instant;
 
 #[derive(Default)]
 struct State {
-    events: HashMap<String, VecDeque<String>>,
+    events: HashMap<String, VecDeque<Event>>,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -21,22 +20,100 @@ static CONTEXT: OnceLock<WorkerContext> = OnceLock::new();
 static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
 static RETURN_VALUE: OnceLock<Mutex<CString>> = OnceLock::new();
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct JobOptions {
-    model: String,
+pub struct JobOptions {
+    pub model: String,
     #[serde(default)]
-    language: Option<String>,
+    pub language: Option<String>,
     #[serde(default)]
-    translate: bool,
+    pub translate: bool,
     #[serde(default)]
-    vad: bool,
+    pub vad: bool,
     #[serde(default)]
-    words: bool,
+    pub words: bool,
     #[serde(default)]
-    hotwords: Option<String>,
+    pub hotwords: Option<String>,
     #[serde(default, rename = "beamSize")]
-    beam_size: Option<usize>,
+    pub beam_size: Option<usize>,
+}
+
+impl Default for JobOptions {
+    fn default() -> Self {
+        Self {
+            model: "small".into(),
+            language: None,
+            translate: false,
+            vad: false,
+            words: false,
+            hotwords: None,
+            beam_size: None,
+        }
+    }
+}
+
+pub use crate::transcription::{Segment, Word};
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Event {
+    Started {
+        #[serde(rename = "jobId")]
+        job_id: String,
+    },
+    Progress {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        completed: u64,
+        total: u64,
+        message: String,
+    },
+    Segment {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        segment: Segment,
+    },
+    Completed {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    Cancelled {
+        #[serde(rename = "jobId")]
+        job_id: String,
+    },
+    Error {
+        #[serde(rename = "jobId", skip_serializing_if = "Option::is_none")]
+        job_id: Option<String>,
+        error: String,
+    },
+}
+
+impl Event {
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed { .. } | Self::Cancelled { .. } | Self::Error { .. }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Job {
+    id: String,
+}
+
+impl Job {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn poll(&self) -> Option<Event> {
+        poll_event(&self.id)
+    }
+    pub fn cancel(&self) -> bool {
+        cancel(&self.id)
+    }
 }
 
 fn state() -> &'static Mutex<State> {
@@ -66,10 +143,7 @@ fn validate_options(
     Ok(())
 }
 
-pub fn push_event(job_id: &str, event: Value) {
-    let serialized = serde_json::to_string(&event).unwrap_or_else(|error| {
-        format!(r#"{{"type":"error","error":"Could not serialize event: {error}"}}"#)
-    });
+pub(crate) fn push_event(job_id: &str, event: Event) {
     let mut state = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -77,10 +151,10 @@ pub fn push_event(job_id: &str, event: Value) {
         .events
         .entry(job_id.to_owned())
         .or_default()
-        .push_back(serialized);
+        .push_back(event);
 }
 
-fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
+fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
     }
@@ -92,7 +166,12 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .events
         .insert(job_id.clone(), VecDeque::new());
-    push_event(&job_id, json!({"type":"started", "jobId":job_id}));
+    push_event(
+        &job_id,
+        Event::Started {
+            job_id: job_id.clone(),
+        },
+    );
 
     let request = Request {
         job_id: job_id.clone(),
@@ -112,11 +191,10 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
             transcription::run(&request, &worker_context, |segment| {
                 push_event(
                     &request.job_id,
-                    json!({
-                        "type":"segment",
-                        "jobId":request.job_id,
-                        "segment":segment,
-                    }),
+                    Event::Segment {
+                        job_id: request.job_id.clone(),
+                        segment: segment.clone(),
+                    },
                 );
             })
         }))
@@ -131,21 +209,25 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
         if worker_context.cancellation.is_cancelled(&request.job_id) {
             push_event(
                 &request.job_id,
-                json!({"type":"cancelled", "jobId":request.job_id}),
+                Event::Cancelled {
+                    job_id: request.job_id.clone(),
+                },
             );
         } else {
             match result {
                 Ok(()) => push_event(
                     &request.job_id,
-                    json!({
-                        "type":"completed",
-                        "jobId":request.job_id,
-                        "elapsedMs":started.elapsed().as_millis(),
-                    }),
+                    Event::Completed {
+                        job_id: request.job_id.clone(),
+                        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    },
                 ),
                 Err(error) => push_event(
                     &request.job_id,
-                    json!({"type":"error", "jobId":request.job_id, "error":error}),
+                    Event::Error {
+                        job_id: Some(request.job_id.clone()),
+                        error,
+                    },
                 ),
             }
         }
@@ -154,23 +236,21 @@ fn start(audio_path: &str, options: JobOptions) -> Result<String, String> {
     Ok(job_id)
 }
 
-fn poll(job_id: &str) -> String {
+fn poll_event(job_id: &str) -> Option<Event> {
     let mut state = state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let event = state
-        .events
-        .get_mut(job_id)
-        .and_then(VecDeque::pop_front)
-        .unwrap_or_default();
-    let terminal = serde_json::from_str::<Value>(&event)
-        .ok()
-        .and_then(|value| value["type"].as_str().map(str::to_owned))
-        .is_some_and(|kind| matches!(kind.as_str(), "completed" | "cancelled" | "error"));
-    if terminal {
+    let event = state.events.get_mut(job_id).and_then(VecDeque::pop_front);
+    if event.as_ref().is_some_and(Event::is_terminal) {
         state.events.remove(job_id);
     }
     event
+}
+
+fn poll(job_id: &str) -> String {
+    poll_event(job_id)
+        .and_then(|event| serde_json::to_string(&event).ok())
+        .unwrap_or_default()
 }
 
 fn cancel(job_id: &str) -> bool {
@@ -183,6 +263,31 @@ fn cancel(job_id: &str) -> bool {
         context().cancellation.cancel(job_id);
     }
     exists
+}
+
+/// Starts a transcription job for native Rust clients using the same worker
+/// and event queue as the REAPER extension API.
+pub fn start_json(audio_path: &str, job_options_json: &str) -> Result<String, String> {
+    let options = serde_json::from_str::<JobOptions>(job_options_json)
+        .map_err(|error| format!("invalid job options: {error}"))?;
+    start_job(audio_path, options)
+}
+
+/// Starts an asynchronous transcription job using native Rust options and events.
+pub fn start(audio_path: impl AsRef<Path>, options: JobOptions) -> Result<Job, String> {
+    let audio_path = audio_path.as_ref().to_string_lossy();
+    start_job(&audio_path, options).map(|id| Job { id })
+}
+
+/// Removes and returns the next serialized event, if one is ready.
+pub fn poll_json(job_id: &str) -> Option<String> {
+    let event = poll(job_id);
+    (!event.is_empty()).then_some(event)
+}
+
+/// Requests cancellation of a native Rust client's job.
+pub fn cancel_job(job_id: &str) -> bool {
+    cancel(job_id)
 }
 
 fn return_string(value: impl AsRef<str>) -> *mut c_void {
@@ -255,7 +360,7 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
         let vad = optional_bool_arg(args, 4);
         let words = optional_bool_arg(args, 5);
         let hotwords = string_arg(args, 6).unwrap_or("");
-        start(
+        start_job(
             audio,
             JobOptions {
                 model: model.to_owned(),
@@ -282,7 +387,7 @@ pub unsafe extern "C" fn start_ex_vararg(arglist: *mut *mut c_void, count: c_int
         let options_json = string_arg(args, 1)?;
         let options = serde_json::from_str::<JobOptions>(options_json)
             .map_err(|error| format!("invalid job_options_json: {error}"))?;
-        start(audio, options)
+        start_job(audio, options)
     })();
     return_start_result(
         result,
@@ -357,9 +462,9 @@ pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::{
-        optional_bool_arg, poll, push_event, state, validate_options, write_output, JobOptions,
+        optional_bool_arg, poll, push_event, state, validate_options, write_output, Event,
+        JobOptions,
     };
-    use serde_json::json;
     use std::collections::VecDeque;
     use std::ffi::{c_int, c_void};
     use std::ptr::null_mut;
@@ -401,11 +506,27 @@ mod tests {
             .unwrap()
             .events
             .insert(job_id.into(), VecDeque::new());
-        push_event(job_id, json!({"sequence": 1}));
-        push_event(job_id, json!({"sequence": 2}));
+        push_event(
+            job_id,
+            Event::Started {
+                job_id: job_id.into(),
+            },
+        );
+        push_event(
+            job_id,
+            Event::Progress {
+                job_id: job_id.into(),
+                completed: 1,
+                total: 2,
+                message: "Working".into(),
+            },
+        );
 
-        assert_eq!(poll(job_id), r#"{"sequence":1}"#);
-        assert_eq!(poll(job_id), r#"{"sequence":2}"#);
+        assert_eq!(poll(job_id), r#"{"type":"started","jobId":"test-fifo"}"#);
+        assert_eq!(
+            poll(job_id),
+            r#"{"type":"progress","jobId":"test-fifo","completed":1,"total":2,"message":"Working"}"#
+        );
         assert_eq!(poll(job_id), "");
     }
 

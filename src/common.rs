@@ -1,5 +1,4 @@
-use crate::api::push_event;
-use serde_json::json;
+use crate::api::{push_event, Event};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -39,12 +38,11 @@ pub struct WorkerContext {
 pub fn emit_progress(job_id: &str, message: &str, completed: u64, total: u64) {
     push_event(
         job_id,
-        json!({
-            "type": "progress",
-            "jobId": job_id,
-            "completed": completed,
-            "total": total,
-            "message": message,
-        }),
+        Event::Progress {
+            job_id: job_id.to_owned(),
+            completed,
+            total,
+            message: message.to_owned(),
+        },
     );
 }

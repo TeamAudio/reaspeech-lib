@@ -102,6 +102,34 @@ See `examples/transcribe.lua` for a complete deferred polling loop. The
 `examples/imgui` directory contains a ReaImGui interface for transcribing
 selected media items interactively.
 
+## Rust library API
+
+Rust applications can construct an
+[`api::JobOptions`](src/api.rs), call `api::start`, and poll the returned
+`api::Job` for typed `api::Event` values. JSON remains an implementation detail
+of the REAPER/ReaScript compatibility boundary.
+
+```rust,no_run
+use reaspeech::api::{self, Event, JobOptions};
+
+let job = api::start("speech.wav", JobOptions {
+    model: "small".into(),
+    vad: true,
+    ..JobOptions::default()
+})?;
+
+loop {
+    match job.poll() {
+        Some(Event::Segment { segment, .. }) => println!("{}", segment.text),
+        Some(Event::Completed { .. } | Event::Cancelled { .. }) => break,
+        Some(Event::Error { error, .. }) => return Err(error),
+        Some(_) => {}
+        None => std::thread::sleep(std::time::Duration::from_millis(20)),
+    }
+}
+# Ok::<(), String>(())
+```
+
 ## Build and install
 
 Install the [Rust toolchain](https://rustup.rs/) and build the extension from
@@ -117,7 +145,7 @@ Prompt (`cmd.exe`):
 ```bat
 rustup default stable-msvc
 cargo build --release
-copy target\release\reaper_reaspeech.dll "%APPDATA%\REAPER\UserPlugins\reaper_reaspeech.dll"
+copy target\release\reaspeech.dll "%APPDATA%\REAPER\UserPlugins\reaper_reaspeech.dll"
 ```
 
 On macOS:
@@ -125,7 +153,7 @@ On macOS:
 ```sh
 cargo build --release
 mkdir -p "$HOME/Library/Application Support/REAPER/UserPlugins"
-cp target/release/libreaper_reaspeech.dylib \
+cp target/release/libreaspeech.dylib \
   "$HOME/Library/Application Support/REAPER/UserPlugins/reaper_reaspeech.dylib"
 ```
 
@@ -134,7 +162,7 @@ On Linux:
 ```sh
 cargo build --release
 mkdir -p "$HOME/.config/REAPER/UserPlugins"
-cp target/release/libreaper_reaspeech.so \
+cp target/release/libreaspeech.so \
   "$HOME/.config/REAPER/UserPlugins/reaper_reaspeech.so"
 ```
 

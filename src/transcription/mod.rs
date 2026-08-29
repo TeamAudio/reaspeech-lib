@@ -1,5 +1,5 @@
 use crate::common::{emit_progress, WorkerContext};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod audio;
 mod inference;
@@ -24,7 +24,7 @@ pub struct Request {
     pub beam_size: Option<usize>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Word {
     pub word: String,
     pub start: f32,
@@ -32,7 +32,7 @@ pub struct Word {
     pub probability: f32,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub start_ms: i64,

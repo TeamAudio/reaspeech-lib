@@ -10,7 +10,12 @@ name = "reaspeech"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["reaper-extension"]
+reaper-extension = [
+    "dep:reaper-low",
+    "dep:reaper-macros",
+    "dep:reaper-medium",
+]
 metal = [
     "candle-core/metal",
     "candle-nn/metal",
@@ -25,9 +30,9 @@ candle-nn = "0.11"
 candle-transformers = "0.11"
 ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
-reaper-low = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
-reaper-macros = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
-reaper-medium = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master" }
+reaper-low = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
+reaper-macros = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
+reaper-medium = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 rubato = { version = "5", default-features = false }
 serde = { version = "1", features = ["derive"] }

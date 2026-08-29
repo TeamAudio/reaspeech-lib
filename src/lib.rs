@@ -3,11 +3,16 @@ mod common;
 mod config;
 mod transcription;
 
+#[cfg(feature = "reaper-extension")]
 use reaper_low::PluginContext;
+#[cfg(feature = "reaper-extension")]
 use reaper_macros::reaper_extension_plugin;
+#[cfg(feature = "reaper-extension")]
 use reaper_medium::ReaperSession;
+#[cfg(feature = "reaper-extension")]
 use std::error::Error;
 
+#[cfg(feature = "reaper-extension")]
 #[reaper_extension_plugin]
 fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
     let mut session = Box::new(ReaperSession::load(context));

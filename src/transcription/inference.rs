@@ -1294,7 +1294,7 @@ fn inference_device() -> Result<Device, String> {
 }
 
 fn inference_dtype(device: &Device) -> DType {
-    if matches!(device, Device::Cuda(_) | Device::Metal(_)) {
+    if matches!(device, Device::Metal(_)) {
         DType::F16
     } else {
         whisper::DTYPE

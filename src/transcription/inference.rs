@@ -155,7 +155,7 @@ impl SimpleBackend for CpuCastingSafetensors {
     }
 }
 
-pub fn transcribe<F>(
+pub fn transcribe<F, G>(
     job_id: &str,
     pcm: &[f32],
     bundle: &ModelBundle,
@@ -166,10 +166,12 @@ pub fn transcribe<F>(
     hotwords: Option<&str>,
     beam_size: Option<usize>,
     context: &WorkerContext,
+    mut on_language: G,
     mut on_segment: F,
 ) -> Result<(), String>
 where
     F: FnMut(&TranscriptSegment),
+    G: FnMut(&str),
 {
     let started = Instant::now();
     let profiling = profiling_enabled();
@@ -241,7 +243,11 @@ where
     )?;
     let language_token = match language {
         Some(code) => Some(token_id(&tokenizer, &format!("<|{code}|>"))?),
-        None => Some(detect_language(model.clone(), &tokenizer, &first_mel)?),
+        None => {
+            let (token, code) = detect_language(model.clone(), &tokenizer, &first_mel)?;
+            on_language(code);
+            Some(token)
+        }
     };
     profile_job(
         job_id,
@@ -1112,7 +1118,7 @@ fn detect_language(
     mut model: whisper::model::Whisper,
     tokenizer: &Tokenizer,
     mel: &Tensor,
-) -> Result<u32, String> {
+) -> Result<(u32, &'static str), String> {
     const LANGUAGE_CODES: &[&str] = &[
         "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv",
         "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no",
@@ -1122,9 +1128,13 @@ fn detect_language(
         "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl",
         "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su",
     ];
-    let ids: Vec<u32> = LANGUAGE_CODES
+    let languages: Vec<(u32, &'static str)> = LANGUAGE_CODES
         .iter()
-        .filter_map(|code| tokenizer.token_to_id(&format!("<|{code}|>")))
+        .filter_map(|&code| {
+            tokenizer
+                .token_to_id(&format!("<|{code}|>"))
+                .map(|id| (id, code))
+        })
         .collect();
     let frames = mel
         .dim(2)
@@ -1144,10 +1154,11 @@ fn detect_language(
         .to_dtype(DType::F32)
         .and_then(|tensor| tensor.to_vec1::<f32>())
         .map_err(candle_error)?;
-    ids.into_iter()
-        .filter_map(|id| logits.get(id as usize).map(|&logit| (id, logit)))
-        .max_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(id, _)| id)
+    languages
+        .into_iter()
+        .filter_map(|(id, code)| logits.get(id as usize).map(|&logit| (id, code, logit)))
+        .max_by(|left, right| left.2.total_cmp(&right.2))
+        .map(|(id, code, _)| (id, code))
         .ok_or_else(|| {
             "Whisper tokenizer has no language tokens within the model vocabulary".into()
         })
@@ -1731,6 +1742,7 @@ mod tests {
             None,
             None,
             &context,
+            |_| {},
             |segment| {
                 segments.push((segment.start_ms, segment.end_ms, segment.text.clone()));
             },

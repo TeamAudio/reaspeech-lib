@@ -43,9 +43,15 @@ pub struct Segment {
     pub words: Option<Vec<Word>>,
 }
 
-pub fn run<F>(request: &Request, context: &WorkerContext, mut on_segment: F) -> Result<(), String>
+pub fn run<F, G>(
+    request: &Request,
+    context: &WorkerContext,
+    on_language: G,
+    mut on_segment: F,
+) -> Result<(), String>
 where
     F: FnMut(&Segment),
+    G: FnMut(&str),
 {
     let profiling = std::env::var_os("REASPEECH_PROFILE").is_some();
     let job_started = Instant::now();
@@ -87,6 +93,7 @@ where
         request.hotwords.as_deref(),
         request.beam_size,
         context,
+        on_language,
         |segment| {
             on_segment(&Segment {
                 start_ms: segment.start_ms,

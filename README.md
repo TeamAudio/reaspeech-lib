@@ -78,8 +78,15 @@ end
 `large-v3-turbo` is transcription-only; select `small`, `medium`, or `large-v3`
 when `translate` is enabled. `Poll` returns one queued
 event at a time and returns `""` when no event is ready. Event types are
-`started`, `progress`, `segment`, `completed`, `cancelled`, and `error`. Each
-recognized segment is emitted immediately:
+`started`, `progress`, `language`, `segment`, `completed`, `cancelled`, and
+`error`. When automatic language detection is requested and speech is found,
+the detected language is emitted before the first segment:
+
+```json
+{"type":"language","jobId":"reaspeech-1","language":"en"}
+```
+
+Each recognized segment is emitted immediately:
 
 ```json
 {"type":"segment","jobId":"reaspeech-1","segment":{"startMs":0,"endMs":820,"text":"Hello","probability":0.94}}

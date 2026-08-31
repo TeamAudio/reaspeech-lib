@@ -73,6 +73,12 @@ pub enum Event {
         job_id: String,
         segment: Segment,
     },
+    #[serde(rename = "language")]
+    DetectedLanguage {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        language: String,
+    },
     Completed {
         #[serde(rename = "jobId")]
         job_id: String,
@@ -188,15 +194,28 @@ fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
     thread::spawn(move || {
         let started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| {
-            transcription::run(&request, &worker_context, |segment| {
-                push_event(
-                    &request.job_id,
-                    Event::Segment {
-                        job_id: request.job_id.clone(),
-                        segment: segment.clone(),
-                    },
-                );
-            })
+            transcription::run(
+                &request,
+                &worker_context,
+                |language| {
+                    push_event(
+                        &request.job_id,
+                        Event::DetectedLanguage {
+                            job_id: request.job_id.clone(),
+                            language: language.to_owned(),
+                        },
+                    );
+                },
+                |segment| {
+                    push_event(
+                        &request.job_id,
+                        Event::Segment {
+                            job_id: request.job_id.clone(),
+                            segment: segment.clone(),
+                        },
+                    );
+                },
+            )
         }))
         .unwrap_or_else(|payload| {
             let detail = payload
@@ -528,6 +547,19 @@ mod tests {
             r#"{"type":"progress","jobId":"test-fifo","completed":1,"total":2,"message":"Working"}"#
         );
         assert_eq!(poll(job_id), "");
+    }
+
+    #[test]
+    fn detected_language_event_uses_the_json_api_shape() {
+        let event = Event::DetectedLanguage {
+            job_id: "reaspeech-1".into(),
+            language: "ja".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"type":"language","jobId":"reaspeech-1","language":"ja"}"#
+        );
     }
 
     #[test]

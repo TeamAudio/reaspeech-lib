@@ -1,9 +1,10 @@
 # ReaSpeech Candle patches
 
 This is `candle-transformers` 0.11.0 from crates.io, vendored so ReaSpeech can
-carry two Whisper changes that are not available in the released crate:
+carry some Whisper changes that are not available in the released crate:
 
 - incremental decoder self-attention KV caching;
+- decoder KV-cache batch reordering for batched beam search;
 - cross-attention capture and dynamic-time-warp word alignment.
 
 The implementation is forward-ported from Hugging Face Candle pull request

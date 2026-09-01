@@ -54,11 +54,14 @@ struct SpeechRegion {
 
 #[derive(Clone)]
 struct Beam {
-    model: whisper::model::Whisper,
     tokens: Vec<u32>,
     token_log_probs: Vec<f64>,
     score: f64,
-    finished: bool,
+}
+
+struct BeamCandidate {
+    beam: Beam,
+    source_index: usize,
 }
 
 struct Decoder {
@@ -525,23 +528,31 @@ impl Decoder {
         profile.projection += projection_started.elapsed();
         log_tensor_stats(job_id, "first decoder logits", &first_logits)?;
         let rules_started = Instant::now();
-        let logits = self.apply_hotword_bias(first_logits, &[])?;
-        let logits = self.apply_timestamp_rules(logits, &prefix, prefix_len)?;
+        let mut first_logits = first_logits
+            .to_dtype(DType::F32)
+            .and_then(|tensor| tensor.to_vec1::<f32>())
+            .map_err(candle_error)?;
+        self.apply_hotword_bias(&mut first_logits, &[]);
+        self.apply_timestamp_rules(&mut first_logits, &prefix, prefix_len)?;
         profile.rules += rules_started.elapsed();
         let beam_started = Instant::now();
-        let mut beams = expand_beam(
-            Beam {
-                model: self.model.clone(),
+        let (initial, mut completed) = advance_beams(
+            &[Beam {
                 tokens: prefix.clone(),
                 token_log_probs: Vec::new(),
                 score: 0.0,
-                finished: false,
-            },
-            logits,
+            }],
+            vec![first_logits],
             self.beam_size,
             self.eot_token,
             &self.suppress_tokens,
         )?;
+        let mut source_indices = candidate_source_indices(&initial)?;
+        let mut beams = candidates_into_beams(initial);
+        self.model
+            .decoder
+            .reorder_kv_cache(&source_indices)
+            .map_err(candle_error)?;
         profile.beam += beam_started.elapsed();
 
         let audio_seconds = audio_samples as f64 / SAMPLE_RATE as f64;
@@ -559,50 +570,54 @@ impl Decoder {
             .min(available_steps);
         for _ in 1..max_steps {
             ensure_not_cancelled(job_id, cancellation)?;
-            if beams.iter().all(|beam| beam.finished) {
+            if beams.is_empty() || completed.len() >= self.beam_size {
                 break;
             }
-            let mut candidates = Vec::with_capacity(self.beam_size * self.beam_size);
-            for mut beam in beams {
-                if beam.finished {
-                    candidates.push(beam);
-                    continue;
-                }
-                // The vendored decoder consumes only the uncached suffix while
-                // retaining the full token list here for beam branching.
-                let decoder_started = Instant::now();
-                let input = Tensor::new(beam.tokens.as_slice(), mel.device())
-                    .and_then(|tensor| tensor.unsqueeze(0))
-                    .map_err(candle_error)?;
-                let ys = beam
-                    .model
-                    .decoder
-                    .forward(&input, &audio_features, false)
-                    .map_err(candle_error)?;
-                profile_sync(mel.device(), profiling)?;
-                profile.decoder += decoder_started.elapsed();
-                let projection_started = Instant::now();
-                let logits = last_logits(&beam.model, &ys)?;
-                profile_sync(mel.device(), profiling)?;
-                profile.projection += projection_started.elapsed();
-                let rules_started = Instant::now();
-                let logits = self.apply_hotword_bias(logits, &beam.tokens[prefix_len..])?;
-                let logits = self.apply_timestamp_rules(logits, &beam.tokens, prefix_len)?;
-                profile.rules += rules_started.elapsed();
-                let beam_started = Instant::now();
-                candidates.extend(expand_beam(
-                    beam,
-                    logits,
-                    self.beam_size,
-                    self.eot_token,
-                    &self.suppress_tokens,
-                )?);
-                profile.beam += beam_started.elapsed();
-                profile.token_steps += 1;
+            // All active hypotheses have the same length. The decoder consumes
+            // only their uncached final token and advances every beam in one batch.
+            let decoder_started = Instant::now();
+            let input = beam_token_tensor(&beams, mel.device())?;
+            let ys = self
+                .model
+                .decoder
+                .forward(&input, &audio_features, false)
+                .map_err(candle_error)?;
+            profile_sync(mel.device(), profiling)?;
+            profile.decoder += decoder_started.elapsed();
+            let projection_started = Instant::now();
+            let logits = last_logits_batch(&self.model, &ys)?;
+            profile_sync(mel.device(), profiling)?;
+            profile.projection += projection_started.elapsed();
+            let rules_started = Instant::now();
+            let mut logits = logits
+                .to_dtype(DType::F32)
+                .and_then(|tensor| tensor.to_vec2::<f32>())
+                .map_err(candle_error)?;
+            for (beam, values) in beams.iter().zip(&mut logits) {
+                self.apply_hotword_bias(values, &beam.tokens[prefix_len..]);
+                self.apply_timestamp_rules(values, &beam.tokens, prefix_len)?;
             }
-            candidates.sort_by(|left, right| right.score.total_cmp(&left.score));
-            candidates.truncate(self.beam_size);
-            beams = candidates;
+            profile.rules += rules_started.elapsed();
+            let beam_started = Instant::now();
+            let decoded_beam_count = beams.len();
+            let (candidates, newly_completed) = advance_beams(
+                &beams,
+                logits,
+                self.beam_size,
+                self.eot_token,
+                &self.suppress_tokens,
+            )?;
+            completed.extend(newly_completed);
+            source_indices = candidate_source_indices(&candidates)?;
+            beams = candidates_into_beams(candidates);
+            if !beams.is_empty() && completed.len() < self.beam_size {
+                self.model
+                    .decoder
+                    .reorder_kv_cache(&source_indices)
+                    .map_err(candle_error)?;
+            }
+            profile.beam += beam_started.elapsed();
+            profile.token_steps += decoded_beam_count;
             let generated = beams
                 .first()
                 .map(|beam| {
@@ -625,11 +640,13 @@ impl Decoder {
             }
         }
 
-        let best = beams
+        if completed.len() < self.beam_size {
+            completed.extend(beams);
+        }
+        let best = completed
             .into_iter()
-            .max_by(|left, right| normalized_score(left).total_cmp(&normalized_score(right)))
+            .max_by(|left, right| beam_score(left).total_cmp(&beam_score(right)))
             .ok_or("Whisper beam search returned no candidates")?;
-        self.model = best.model.clone();
         let generated = &best.tokens[prefix_len..];
         let average_log_probability =
             average_log_probability(generated, &best.token_log_probs, self.eot_token);
@@ -713,14 +730,10 @@ impl Decoder {
         Ok((pieces, no_speech, average_log_probability))
     }
 
-    fn apply_hotword_bias(&self, logits: Tensor, sampled: &[u32]) -> Result<Tensor, String> {
+    fn apply_hotword_bias(&self, values: &mut [f32], sampled: &[u32]) {
         if self.hotword_token_sequences.is_empty() {
-            return Ok(logits);
+            return;
         }
-        let mut values = logits
-            .to_dtype(DType::F32)
-            .and_then(|tensor| tensor.to_vec1::<f32>())
-            .map_err(candle_error)?;
         let best = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         for (token, bias, max_gap) in
             hotword_bias_candidates(&self.hotword_token_sequences, sampled)
@@ -731,19 +744,14 @@ impl Decoder {
                 }
             }
         }
-        Tensor::new(values.as_slice(), logits.device()).map_err(candle_error)
     }
 
     fn apply_timestamp_rules(
         &self,
-        logits: Tensor,
+        values: &mut [f32],
         tokens: &[u32],
         prefix_len: usize,
-    ) -> Result<Tensor, String> {
-        let mut values = logits
-            .to_dtype(DType::F32)
-            .and_then(|tensor| tensor.to_vec1::<f32>())
-            .map_err(candle_error)?;
+    ) -> Result<(), String> {
         let timestamp_begin = self
             .no_timestamps_token
             .checked_add(1)
@@ -827,7 +835,7 @@ impl Decoder {
                 *value = f32::NEG_INFINITY;
             }
         }
-        Tensor::new(values.as_slice(), logits.device()).map_err(candle_error)
+        Ok(())
     }
 
     fn timestamped_pieces(
@@ -917,43 +925,111 @@ impl Decoder {
     }
 }
 
-fn expand_beam(
-    beam: Beam,
-    logits: Tensor,
-    count: usize,
+fn advance_beams(
+    beams: &[Beam],
+    logits: Vec<Vec<f32>>,
+    beam_size: usize,
     eot_token: u32,
     suppressed: &[bool],
-) -> Result<Vec<Beam>, String> {
-    let mut logits = logits
-        .to_dtype(DType::F32)
-        .and_then(|tensor| tensor.to_vec1::<f32>())
-        .map_err(candle_error)?;
+) -> Result<(Vec<BeamCandidate>, Vec<Beam>), String> {
+    if beams.len() != logits.len() {
+        return Err("Whisper beam count does not match logits batch".into());
+    }
+    let candidates_per_beam = beam_size.saturating_add(1);
+    let mut candidates = Vec::with_capacity(beams.len() * candidates_per_beam);
+    for (source_index, (beam, values)) in beams.iter().zip(logits).enumerate() {
+        for (token, log_prob) in top_token_log_probs(values, candidates_per_beam, suppressed)? {
+            let mut next = beam.clone();
+            next.tokens.push(token as u32);
+            next.token_log_probs.push(log_prob);
+            next.score += log_prob;
+            candidates.push(BeamCandidate {
+                beam: next,
+                source_index,
+            });
+        }
+    }
+
+    candidates.sort_by(|left, right| beam_score(&right.beam).total_cmp(&beam_score(&left.beam)));
+    let mut active = Vec::with_capacity(beam_size);
+    let mut completed = Vec::new();
+    for candidate in candidates {
+        if candidate.beam.tokens.last().copied() == Some(eot_token) {
+            completed.push(candidate.beam);
+        } else {
+            active.push(candidate);
+            if active.len() == beam_size {
+                break;
+            }
+        }
+    }
+    Ok((active, completed))
+}
+
+fn top_token_log_probs(
+    mut logits: Vec<f32>,
+    count: usize,
+    suppressed: &[bool],
+) -> Result<Vec<(usize, f64)>, String> {
     for (index, value) in logits.iter_mut().enumerate() {
         if suppressed.get(index).copied().unwrap_or(false) {
             *value = f32::NEG_INFINITY;
         }
     }
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return Err("Whisper beam search suppressed every token".into());
+    }
     let sum: f64 = logits
         .iter()
         .map(|value| ((*value - max) as f64).exp())
         .sum();
     let log_denom = max as f64 + sum.ln();
     let mut ranked: Vec<(usize, f32)> = logits.into_iter().enumerate().collect();
+    let count = count.min(ranked.len());
+    if count < ranked.len() {
+        ranked.select_nth_unstable_by(count, |left, right| right.1.total_cmp(&left.1));
+        ranked.truncate(count);
+    }
     ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
     Ok(ranked
         .into_iter()
-        .take(count)
-        .map(|(token, logit)| {
-            let mut next = beam.clone();
-            next.tokens.push(token as u32);
-            let log_prob = logit as f64 - log_denom;
-            next.token_log_probs.push(log_prob);
-            next.score += log_prob;
-            next.finished = token as u32 == eot_token;
-            next
-        })
+        .map(|(token, logit)| (token, logit as f64 - log_denom))
         .collect())
+}
+
+fn candidate_source_indices(candidates: &[BeamCandidate]) -> Result<Vec<u32>, String> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            u32::try_from(candidate.source_index)
+                .map_err(|_| "Whisper beam index does not fit the decoder cache".into())
+        })
+        .collect()
+}
+
+fn candidates_into_beams(candidates: Vec<BeamCandidate>) -> Vec<Beam> {
+    candidates
+        .into_iter()
+        .map(|candidate| candidate.beam)
+        .collect()
+}
+
+fn beam_token_tensor(beams: &[Beam], device: &Device) -> Result<Tensor, String> {
+    let token_count = beams
+        .first()
+        .map(|beam| beam.tokens.len())
+        .ok_or("Whisper beam search has no active hypotheses")?;
+    if beams.iter().any(|beam| beam.tokens.len() != token_count) {
+        return Err("Whisper active beams have different token lengths".into());
+    }
+    let tokens: Vec<u32> = beams
+        .iter()
+        .flat_map(|beam| beam.tokens.iter().copied())
+        .collect();
+    Tensor::new(tokens.as_slice(), device)
+        .and_then(|tensor| tensor.reshape((beams.len(), token_count)))
+        .map_err(candle_error)
 }
 
 fn probability_from_log_probs(log_probs: &[f64]) -> f32 {
@@ -1097,20 +1173,23 @@ fn words_from_tokens(
         .collect())
 }
 
-fn normalized_score(beam: &Beam) -> f64 {
-    beam.score / beam.tokens.len().max(1) as f64
+fn beam_score(beam: &Beam) -> f64 {
+    beam.score / beam.token_log_probs.len().max(1) as f64
 }
 
 fn last_logits(model: &whisper::model::Whisper, ys: &Tensor) -> Result<Tensor, String> {
+    last_logits_batch(model, ys)?.i(0).map_err(candle_error)
+}
+
+fn last_logits_batch(model: &whisper::model::Whisper, ys: &Tensor) -> Result<Tensor, String> {
     let (_, length, _) = ys.dims3().map_err(candle_error)?;
     let last = length
         .checked_sub(1)
         .ok_or("Whisper decoder returned an empty token sequence")?;
     model
         .decoder
-        .final_linear(&ys.i((..1, last..)).map_err(candle_error)?)
-        .and_then(|tensor| tensor.i(0))
-        .and_then(|tensor| tensor.i(0))
+        .final_linear(&ys.i((.., last..)).map_err(candle_error)?)
+        .and_then(|tensor| tensor.i((.., 0)))
         .map_err(candle_error)
 }
 
@@ -1501,6 +1580,68 @@ mod tests {
     }
 
     #[test]
+    fn completed_hypotheses_do_not_consume_active_beam_slots() {
+        let beam = test_beam(&[100], &[]);
+        let eot = 3;
+
+        let (active, completed) =
+            advance_beams(&[beam], vec![vec![2.0, 1.0, 0.0, 3.0]], 2, eot, &[]).unwrap();
+
+        assert_eq!(active.len(), 2);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].tokens.last(), Some(&eot));
+        assert!(active
+            .iter()
+            .all(|candidate| candidate.beam.tokens.last() != Some(&eot)));
+    }
+
+    #[test]
+    fn beam_score_uses_only_generated_token_probabilities() {
+        let short_prefix = test_beam(&[1, 2], &[-0.4]);
+        let long_prefix = test_beam(&[1, 2, 3, 4, 5], &[-0.4]);
+
+        assert!((beam_score(&short_prefix) - -0.4).abs() < f64::EPSILON);
+        assert_eq!(beam_score(&short_prefix), beam_score(&long_prefix));
+    }
+
+    #[test]
+    fn beam_score_can_select_a_better_average_over_a_better_sum() {
+        let one_token = test_beam(&[1], &[-0.2]);
+        let two_tokens = test_beam(&[1, 2], &[-0.15, -0.15]);
+
+        assert!(two_tokens.score < one_token.score);
+        assert!(beam_score(&two_tokens) > beam_score(&one_token));
+    }
+
+    #[test]
+    fn beam_candidates_remember_their_cache_sources() {
+        let beams = [test_beam(&[10], &[]), test_beam(&[20], &[])];
+
+        let (active, _) = advance_beams(
+            &beams,
+            vec![vec![4.0, 3.9, -10.0], vec![0.0, 0.0, 0.0]],
+            2,
+            99,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(candidate_source_indices(&active).unwrap(), [0, 0]);
+        assert_eq!(active[0].beam.tokens, [10, 0]);
+        assert_eq!(active[1].beam.tokens, [10, 1]);
+    }
+
+    #[test]
+    fn beam_token_tensor_batches_equal_length_hypotheses() {
+        let beams = [test_beam(&[1, 2], &[]), test_beam(&[3, 4], &[])];
+
+        let tensor = beam_token_tensor(&beams, &Device::Cpu).unwrap();
+
+        assert_eq!(tensor.dims(), &[2, 2]);
+        assert_eq!(tensor.to_vec2::<u32>().unwrap(), [[1, 2], [3, 4]]);
+    }
+
+    #[test]
     fn skips_only_low_confidence_chunks_with_high_no_speech_probability() {
         assert!(should_skip_for_no_speech(0.7, -1.1));
         assert!(!should_skip_for_no_speech(0.7, -0.9));
@@ -1591,6 +1732,14 @@ mod tests {
             start: 0.0,
             end: 0.0,
             tokens: tokens.into(),
+        }
+    }
+
+    fn test_beam(tokens: &[u32], token_log_probs: &[f64]) -> Beam {
+        Beam {
+            tokens: tokens.into(),
+            token_log_probs: token_log_probs.into(),
+            score: token_log_probs.iter().sum(),
         }
     }
 

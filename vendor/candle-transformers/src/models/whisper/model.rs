@@ -172,6 +172,14 @@ impl MultiHeadAttention {
     fn reset_kv_cache(&mut self) {
         self.kv_cache = None;
     }
+
+    fn reorder_kv_cache(&mut self, source_indices: &Tensor) -> Result<()> {
+        if let Some((keys, values)) = &mut self.kv_cache {
+            *keys = keys.index_select(source_indices, 0)?;
+            *values = values.index_select(source_indices, 0)?;
+        }
+        Ok(())
+    }
 }
 
 // https://github.com/openai/whisper/blob/f572f2161ba831bae131364c3bffdead7af6d210/whisper/model.py#L111
@@ -261,6 +269,14 @@ impl ResidualAttentionBlock {
         if let Some((attn, _)) = &mut self.cross_attn {
             attn.reset_kv_cache();
         }
+    }
+
+    fn reorder_kv_cache(&mut self, source_indices: &Tensor) -> Result<()> {
+        self.attn.reorder_kv_cache(source_indices)?;
+        if let Some((attn, _)) = &mut self.cross_attn {
+            attn.reorder_kv_cache(source_indices)?;
+        }
+        Ok(())
     }
 }
 
@@ -459,6 +475,25 @@ impl TextDecoder {
         for block in self.blocks.iter_mut() {
             block.reset_kv_cache();
         }
+    }
+
+    /// Reorders the cached decoder batch after beam-search pruning.
+    ///
+    /// Entries may be repeated, which lets a single parent hypothesis branch
+    /// into multiple children without recomputing its cached prefix.
+    pub fn reorder_kv_cache(&mut self, source_indices: &[u32]) -> Result<()> {
+        let Some(device) = self
+            .blocks
+            .iter()
+            .find_map(|block| block.attn.kv_cache.as_ref().map(|(keys, _)| keys.device()))
+        else {
+            return Ok(());
+        };
+        let source_indices = Tensor::new(source_indices, device)?;
+        for block in self.blocks.iter_mut() {
+            block.reorder_kv_cache(&source_indices)?;
+        }
+        Ok(())
     }
 }
 

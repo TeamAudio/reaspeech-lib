@@ -53,10 +53,16 @@ For named options and future extensibility, use `ReaSpeech_StartEx`. Its
 | `words` | Boolean | No | `false` |
 | `hotwords` | String | No | No hotwords |
 | `beamSize` | Integer | No | `1` |
+| `startMs` | Integer | No | Start of the source file |
+| `endMs` | Integer | No | End of the source file |
 
 Unknown fields are rejected so that misspelled option names do not silently
 change transcription behavior. `beamSize` must be between `1` and `5`; larger
-values may improve decoding quality at the cost of additional processing. For
+values may improve decoding quality at the cost of additional processing.
+`startMs` and `endMs` restrict inference to a source-file range expressed in
+milliseconds. Bounds must be non-negative, and when both are present `endMs`
+must be greater than `startMs`. Segment and word timestamps remain relative to
+the original source file, not to the beginning of the requested range. For
 example:
 
 ```lua
@@ -65,7 +71,9 @@ local options = [[{
   "language": "en",
   "vad": true,
   "beamSize": 3,
-  "hotwords": "ReaSpeech, REAPER, Cockos"
+  "hotwords": "ReaSpeech, REAPER, Cockos",
+  "startMs": 15000,
+  "endMs": 45000
 }]]
 local ok, job_id = reaper.ReaSpeech_StartEx(path, options)
 if not ok then
@@ -122,6 +130,8 @@ use reaspeech::api::{self, Event, JobOptions};
 let job = api::start("speech.wav", JobOptions {
     model: "small".into(),
     vad: true,
+    start_ms: Some(15_000),
+    end_ms: Some(45_000),
     ..JobOptions::default()
 })?;
 

@@ -36,6 +36,10 @@ pub struct JobOptions {
     pub hotwords: Option<String>,
     #[serde(default, rename = "beamSize")]
     pub beam_size: Option<usize>,
+    #[serde(default, rename = "startMs")]
+    pub start_ms: Option<i64>,
+    #[serde(default, rename = "endMs")]
+    pub end_ms: Option<i64>,
 }
 
 impl Default for JobOptions {
@@ -48,6 +52,8 @@ impl Default for JobOptions {
             words: false,
             hotwords: None,
             beam_size: None,
+            start_ms: None,
+            end_ms: None,
         }
     }
 }
@@ -165,6 +171,14 @@ fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
         return Err("audio_path does not name a readable file".into());
     }
     validate_options(&options.model, options.translate, options.beam_size)?;
+    if options.start_ms.is_some_and(|value| value < 0)
+        || options.end_ms.is_some_and(|value| value < 0)
+        || matches!((options.start_ms, options.end_ms), (Some(start), Some(end)) if end <= start)
+    {
+        return Err(
+            "audio range must have non-negative bounds and endMs must exceed startMs".into(),
+        );
+    }
 
     let job_id = format!("reaspeech-{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed));
     state()
@@ -189,6 +203,8 @@ fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
         words: options.words,
         hotwords: options.hotwords.filter(|value| !value.trim().is_empty()),
         beam_size: options.beam_size,
+        start_ms: options.start_ms,
+        end_ms: options.end_ms,
     };
     let worker_context = context().clone();
     thread::spawn(move || {
@@ -389,6 +405,8 @@ pub unsafe extern "C" fn start_vararg(arglist: *mut *mut c_void, count: c_int) -
                 words,
                 hotwords: Some(hotwords.to_owned()),
                 beam_size: None,
+                start_ms: None,
+                end_ms: None,
             },
         )
     })();
@@ -594,6 +612,8 @@ mod tests {
                 words: false,
                 hotwords: None,
                 beam_size: None,
+                start_ms: None,
+                end_ms: None,
             }
         );
     }
@@ -612,6 +632,14 @@ mod tests {
             validate_options("small", false, Some(6)).unwrap_err(),
             "beamSize must be between 1 and 5"
         );
+    }
+
+    #[test]
+    fn job_options_accept_audio_range() {
+        let options: JobOptions =
+            serde_json::from_str(r#"{"model":"small","startMs":1250,"endMs":4250}"#).unwrap();
+        assert_eq!(options.start_ms, Some(1250));
+        assert_eq!(options.end_ms, Some(4250));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # ReaSpeech Lib
 
-ReaSpeech Lib is a REAPER extension written in Rust. It exposes a Whisper
-transcription engine to Lua/ReaScript without blocking REAPER's main thread.
+ReaSpeech Lib is a Whisper transcription engine written in Rust. It is
+available as a REAPER extension exposing a Lua/ReaScript API, as a native
+Rust library, and as a C library that can be embedded in other applications.
 
 ## Lua API
 
@@ -146,6 +147,50 @@ loop {
 }
 # Ok::<(), String>(())
 ```
+
+## C API
+
+Applications written in C, C++, or any language with a C FFI can embed
+ReaSpeech directly, without REAPER. Build the library without the
+`reaper-extension` feature (its default REAPER dependencies are skipped):
+
+```sh
+cargo build --release --no-default-features
+```
+
+This produces a `cdylib` (`libreaspeech.so`/`.dylib`/`reaspeech.dll`) and a
+`staticlib` (`libreaspeech.a`/`reaspeech.lib`) alongside the usual `rlib`.
+Link against either one and include [`include/reaspeech.h`](include/reaspeech.h),
+which declares the exported functions:
+
+```c
+#include "reaspeech.h"
+
+char job_id[64];
+if (!reaspeech_start("speech.wav", "small", NULL, false, true, false, NULL,
+                      job_id, sizeof job_id)) {
+    fprintf(stderr, "start failed: %s\n", job_id);
+    return 1;
+}
+
+for (;;) {
+    const char *event = reaspeech_poll(job_id);
+    if (event[0] == '\0') {
+        /* nothing ready yet; sleep briefly and poll again */
+        continue;
+    }
+    puts(event); /* a JSON event; see the Lua API section above for shapes */
+    if (strstr(event, "\"completed\"") || strstr(event, "\"cancelled\"") ||
+        strstr(event, "\"error\"")) {
+        break;
+    }
+}
+```
+
+`reaspeech_start_ex` accepts the same JSON `JobOptions` object documented
+above instead of positional arguments, and `reaspeech_cancel` requests
+cancellation of a running job. See the header for full documentation,
+including the threading and buffer-lifetime rules for `reaspeech_poll`.
 
 ## Build and install
 

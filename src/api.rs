@@ -446,7 +446,9 @@ pub unsafe extern "C" fn cancel_vararg(arglist: *mut *mut c_void, count: c_int) 
     string_arg(args, 0).map(cancel).unwrap_or(false) as isize as *mut c_void
 }
 
-pub extern "C" fn start_native(
+/// C ABI entry point. See `reaspeech.h` for documentation.
+#[no_mangle]
+pub extern "C" fn reaspeech_start(
     audio_path: *const c_char,
     model_name: *const c_char,
     language: *const c_char,
@@ -471,7 +473,9 @@ pub extern "C" fn start_native(
     unsafe { !start_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int).is_null() }
 }
 
-pub extern "C" fn start_ex_native(
+/// C ABI entry point. See `reaspeech.h` for documentation.
+#[no_mangle]
+pub extern "C" fn reaspeech_start_ex(
     audio_path: *const c_char,
     job_options_json: *const c_char,
     job_id_out: *mut c_char,
@@ -486,12 +490,20 @@ pub extern "C" fn start_ex_native(
     unsafe { !start_ex_vararg(args.as_ptr() as *mut *mut c_void, args.len() as c_int).is_null() }
 }
 
-pub extern "C" fn poll_native(job_id: *const c_char) -> *const c_char {
+/// C ABI entry point. See `reaspeech.h` for documentation.
+///
+/// The returned pointer refers to a shared buffer that is overwritten by the
+/// next call to `reaspeech_poll` from any thread. Copy the string before
+/// making another call, and serialize calls from multiple threads.
+#[no_mangle]
+pub extern "C" fn reaspeech_poll(job_id: *const c_char) -> *const c_char {
     let args = [job_id as *mut c_void];
     unsafe { poll_vararg(args.as_ptr() as *mut *mut c_void, 1) as *const c_char }
 }
 
-pub extern "C" fn cancel_native(job_id: *const c_char) -> c_int {
+/// C ABI entry point. See `reaspeech.h` for documentation.
+#[no_mangle]
+pub extern "C" fn reaspeech_cancel(job_id: *const c_char) -> c_int {
     let args = [job_id as *mut c_void];
     unsafe { cancel_vararg(args.as_ptr() as *mut *mut c_void, 1) as isize as c_int }
 }

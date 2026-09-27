@@ -26,7 +26,7 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
     unsafe {
         session.plugin_register_add_api_and_def(
             "ReaSpeech_Start",
-            api::start_native as *mut _,
+            api::reaspeech_start as *mut _,
             api::start_vararg,
             "bool",
             "const char*,const char*,const char*,bool,bool,bool,const char*,char*,int",
@@ -35,7 +35,7 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
         )?;
         session.plugin_register_add_api_and_def(
             "ReaSpeech_StartEx",
-            api::start_ex_native as *mut _,
+            api::reaspeech_start_ex as *mut _,
             api::start_ex_vararg,
             "bool",
             "const char*,const char*,char*,int",
@@ -44,7 +44,7 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
         )?;
         session.plugin_register_add_api_and_def(
             "ReaSpeech_Poll",
-            api::poll_native as *mut _,
+            api::reaspeech_poll as *mut _,
             api::poll_vararg,
             "const char*",
             "const char*",
@@ -53,7 +53,7 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
         )?;
         session.plugin_register_add_api_and_def(
             "ReaSpeech_Cancel",
-            api::cancel_native as *mut _,
+            api::reaspeech_cancel as *mut _,
             api::cancel_vararg,
             "bool",
             "const char*",

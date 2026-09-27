@@ -129,6 +129,7 @@ fn download_to_partial(
     let mut output =
         File::create(partial).map_err(|error| format!("Could not create model file: {error}"))?;
     let mut downloaded = 0_u64;
+    let mut last_reported_percent = None;
     let mut buffer = vec![0_u8; 256 * 1024];
     let progress_message = download_progress_message(description);
 
@@ -151,7 +152,10 @@ fn download_to_partial(
         } else {
             downloaded.saturating_mul(100) / total
         };
-        emit_stage(job_id, &progress_message, percent);
+        if percent < 100 && last_reported_percent != Some(percent) {
+            emit_stage(job_id, &progress_message, percent);
+            last_reported_percent = Some(percent);
+        }
     }
 
     output

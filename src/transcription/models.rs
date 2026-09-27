@@ -103,12 +103,33 @@ fn ensure_download(
         return Err(error);
     }
 
-    fs::rename(&partial, &destination)
-        .map_err(|error| format!("Could not finish model download: {error}"))?;
+    finish_download(&partial, &destination)?;
     emit_stage(job_id, &progress_message, 100);
     Ok(destination)
 }
 
+fn finish_download(partial: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    const RETRIES: usize = 30;
+    for attempt in 0..=RETRIES {
+        match fs::rename(partial, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(32 | 33))
+                    && attempt < RETRIES =>
+            {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not finish model download: {error}. The completed download remains at {}",
+                    partial.display()
+                ));
+            }
+        }
+    }
+    unreachable!("the final rename attempt always returns")
+}
 fn download_to_partial(
     job_id: &str,
     context: &WorkerContext,
@@ -177,5 +198,45 @@ mod tests {
             download_progress_message("model weights"),
             "Downloading model weights"
         );
+    }
+}
+#[cfg(all(test, windows))]
+mod finalize_tests {
+    use super::finish_download;
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn retries_rename_while_another_process_holds_the_partial_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("reaspeech-finalize-{unique}"));
+        fs::create_dir(&directory).unwrap();
+        let partial = directory.join("model.part");
+        let destination = directory.join("model.safetensors");
+        let mut file = File::create(&partial).unwrap();
+        file.write_all(b"model weights").unwrap();
+        drop(file);
+
+        // Denying FILE_SHARE_DELETE makes the first rename fail with error 32.
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&partial)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(blocker);
+        });
+
+        finish_download(&partial, &destination).unwrap();
+        release.join().unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"model weights");
+        fs::remove_file(destination).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

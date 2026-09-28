@@ -1,9 +1,12 @@
 use super::emit_stage;
 use crate::common::WorkerContext;
 use crate::config;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_PARTIAL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct ModelBundle {
     pub config: PathBuf,
@@ -95,9 +98,14 @@ fn ensure_download(
         return Ok(destination);
     }
 
-    let partial = destination.with_extension("part");
-    let _ = fs::remove_file(&partial);
-    let result = download_to_partial(job_id, context, url, description, &partial);
+    let _lock = lock_destination(&destination)?;
+    if destination.is_file() {
+        emit_stage(job_id, &progress_message, 100);
+        return Ok(destination);
+    }
+
+    let (partial, output) = create_partial(&destination)?;
+    let result = download_to_partial(job_id, context, url, description, output);
     if let Err(error) = result {
         let _ = fs::remove_file(&partial);
         return Err(error);
@@ -108,7 +116,42 @@ fn ensure_download(
     Ok(destination)
 }
 
-fn finish_download(partial: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+fn lock_destination(destination: &Path) -> Result<File, String> {
+    let mut lock_name = destination.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(PathBuf::from(lock_name))
+        .map_err(|error| format!("Could not open model download lock: {error}"))?;
+    lock_file
+        .lock()
+        .map_err(|error| format!("Could not lock model download: {error}"))?;
+    Ok(lock_file)
+}
+
+fn create_partial(destination: &Path) -> Result<(PathBuf, File), String> {
+    loop {
+        let id = NEXT_PARTIAL_ID.fetch_add(1, Ordering::Relaxed);
+        let partial = destination.with_extension(format!("part.{}.{}", std::process::id(), id));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+        {
+            Ok(file) => return Ok((partial, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not create model file: {error}")),
+        }
+    }
+}
+
+fn finish_download(partial: &Path, destination: &Path) -> Result<(), String> {
+    if destination.is_file() {
+        let _ = fs::remove_file(partial);
+        return Ok(());
+    }
     const RETRIES: usize = 30;
     for attempt in 0..=RETRIES {
         match fs::rename(partial, destination) {
@@ -135,7 +178,7 @@ fn download_to_partial(
     context: &WorkerContext,
     url: &str,
     description: &str,
-    partial: &std::path::Path,
+    mut output: File,
 ) -> Result<(), String> {
     let mut response = reqwest::blocking::Client::builder()
         .user_agent("ReaSpeech/0.1")
@@ -147,8 +190,6 @@ fn download_to_partial(
         .error_for_status()
         .map_err(|error| format!("{description} download failed: {error}"))?;
     let total = response.content_length().unwrap_or(0);
-    let mut output =
-        File::create(partial).map_err(|error| format!("Could not create model file: {error}"))?;
     let mut downloaded = 0_u64;
     let mut last_reported_percent = None;
     let mut buffer = vec![0_u8; 256 * 1024];
@@ -190,7 +231,11 @@ fn download_progress_message(description: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::download_progress_message;
+    use super::{create_partial, download_progress_message, finish_download, lock_destination};
+    use std::fs;
+    use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn download_progress_identifies_the_asset() {
@@ -198,6 +243,62 @@ mod tests {
             download_progress_message("model weights"),
             "Downloading model weights"
         );
+    }
+
+    #[test]
+    fn concurrent_partials_cannot_replace_the_published_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("reaspeech-download-{unique}"));
+        fs::create_dir(&directory).unwrap();
+        let destination = directory.join("model.safetensors");
+        let (first_path, mut first) = create_partial(&destination).unwrap();
+        let (second_path, mut second) = create_partial(&destination).unwrap();
+        assert_ne!(first_path, second_path);
+        first.write_all(b"complete first model").unwrap();
+        second.write_all(b"second model").unwrap();
+        drop(first);
+        drop(second);
+
+        let lock = lock_destination(&destination).unwrap();
+        finish_download(&first_path, &destination).unwrap();
+        finish_download(&second_path, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"complete first model");
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        drop(lock);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn destination_lock_serializes_downloads() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("reaspeech-lock-{unique}"));
+        fs::create_dir(&directory).unwrap();
+        let destination = directory.join("model.safetensors");
+        let first = lock_destination(&destination).unwrap();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (acquired_sender, acquired_receiver) = mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            let _second = lock_destination(&destination).unwrap();
+            acquired_sender.send(()).unwrap();
+        });
+        started_receiver.recv().unwrap();
+        assert!(acquired_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(first);
+        acquired_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        contender.join().unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 }
 #[cfg(all(test, windows))]
@@ -209,7 +310,7 @@ mod finalize_tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn retries_rename_while_another_process_holds_the_partial_file() {
+    fn retries_publish_while_another_process_holds_the_partial_file() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

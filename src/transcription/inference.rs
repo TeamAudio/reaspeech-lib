@@ -639,7 +639,8 @@ impl Decoder {
             audio_seconds as f32,
             words,
         )?;
-        if words {
+        let n_frames = audio_samples.div_ceil(whisper::HOP_LENGTH);
+        if words && n_frames / 2 > 0 {
             let text_tokens: Vec<u32> = generated
                 .iter()
                 .copied()
@@ -658,7 +659,6 @@ impl Decoder {
                 .decoder
                 .forward(&alignment_input, &audio_features, true)
                 .map_err(candle_error)?;
-            let n_frames = audio_samples.div_ceil(whisper::HOP_LENGTH);
             let raw = self
                 .model
                 .dtw_timestamps(

@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 static NEXT_PARTIAL_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -180,8 +181,14 @@ fn download_to_partial(
     description: &str,
     mut output: File,
 ) -> Result<(), String> {
+    // Large Whisper weights can take hours on slow connections. Keep a finite
+    // deadline so a stalled transfer does not wait forever.
+    const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
     let mut response = reqwest::blocking::Client::builder()
         .user_agent("ReaSpeech/0.1")
+        .timeout(DOWNLOAD_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?
         .get(url)

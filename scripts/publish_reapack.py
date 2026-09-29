@@ -228,7 +228,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=Path,
-        help="use already-downloaded artifacts instead of gh",
+        help="use already-downloaded artifacts for testing only (not with --release)",
     )
     parser.add_argument("--changelog", help="ReaPack changelog text")
     parser.add_argument(
@@ -245,6 +245,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.release and args.artifacts_dir is not None:
+        raise PublishError("--artifacts-dir is for testing only and cannot be used with --release")
     reascripts = args.reascripts.expanduser().resolve()
     version = package_version()
     changelog = args.changelog or f"ReaSpeech Lib {version}"

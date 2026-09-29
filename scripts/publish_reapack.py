@@ -218,17 +218,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stage GitHub Actions artifacts in the TeamAudio ReaPack repository."
     )
-    parser.add_argument("--run-id", required=True, help="Build workflow run ID")
+    artifact_source = parser.add_mutually_exclusive_group(required=True)
+    artifact_source.add_argument("--run-id", help="Build workflow run ID")
+    artifact_source.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        help="use already-downloaded artifacts for testing only (not with --release)",
+    )
     parser.add_argument(
         "--reascripts",
         type=Path,
         default=PROJECT_DIR.parent / "reascripts",
         help="ReaPack repository (default: ../reascripts)",
-    )
-    parser.add_argument(
-        "--artifacts-dir",
-        type=Path,
-        help="use already-downloaded artifacts for testing only (not with --release)",
     )
     parser.add_argument("--changelog", help="ReaPack changelog text")
     parser.add_argument(

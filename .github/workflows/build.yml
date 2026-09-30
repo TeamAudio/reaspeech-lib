@@ -1,0 +1,197 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # ort-sys stores downloaded native archives outside Cargo's target directory.
+  # Keep them beside the workspace so the Rust cache restores native libraries
+  # together with the build-script output that points to them.
+  ORT_CACHE_DIR: ${{ github.workspace }}/.ort-cache
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (CPU)
+            os: windows-latest
+            artifact: reaspeech-windows-x86_64-cpu
+            source: target/release/reaspeech.dll
+            output: reaper_reaspeech.dll
+          - name: Linux (CPU)
+            os: ubuntu-24.04
+            artifact: reaspeech-linux-x86_64-cpu
+            source: target/release/libreaspeech.so
+            output: reaper_reaspeech.so
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-with-ort
+          key: ${{ matrix.artifact }}
+          cache-directories: .ort-cache
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Stage extension
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp "${{ matrix.source }}" "artifact/${{ matrix.output }}"
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifact/
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS arm64 (Metal)
+    runs-on: macos-14
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-with-ort
+          key: reaspeech-macos-arm64-metal
+          cache-directories: .ort-cache
+
+      - name: Build
+        run: cargo build --release --locked --features metal --target aarch64-apple-darwin
+
+      - name: Stage extension
+        run: |
+          mkdir -p artifact
+          cp target/aarch64-apple-darwin/release/libreaspeech.dylib \
+            artifact/reaper_reaspeech.dylib
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: reaspeech-macos-arm64-metal
+          path: artifact/
+          if-no-files-found: error
+
+  build-cuda:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (CUDA 13)
+            os: windows-2022
+            cuda-version: 13.1.0
+            compute-cap: '75'
+            artifact: reaspeech-windows-x86_64-cuda13
+            source: target/release/reaspeech.dll
+            output: reaper_reaspeech.dll
+          - name: Windows (CUDA 12)
+            os: windows-2022
+            cuda-version: 12.5.0
+            compute-cap: '61'
+            artifact: reaspeech-windows-x86_64-cuda12
+            source: target/release/reaspeech.dll
+            output: reaper_reaspeech.dll
+          - name: Linux (CUDA 13)
+            os: ubuntu-24.04
+            cuda-version: 13.1.0
+            compute-cap: '75'
+            artifact: reaspeech-linux-x86_64-cuda13
+            source: target/release/libreaspeech.so
+            output: reaper_reaspeech.so
+          - name: Linux (CUDA 12)
+            os: ubuntu-24.04
+            cuda-version: 12.5.0
+            compute-cap: '61'
+            artifact: reaspeech-linux-x86_64-cuda12
+            source: target/release/libreaspeech.so
+            output: reaper_reaspeech.so
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install CUDA ${{ matrix.cuda-version }} (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda-version }}
+          method: local
+          log-file-suffix: windows-${{ matrix.cuda-version }}.txt
+
+      - name: Install CUDA ${{ matrix.cuda-version }} (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda-version }}
+          method: network
+          sub-packages: '["nvcc", "cudart-dev", "libraries-dev"]'
+          log-file-suffix: linux-${{ matrix.cuda-version }}.txt
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-with-ort
+          key: ${{ matrix.artifact }}-${{ matrix.cuda-version }}
+          cache-directories: .ort-cache
+
+      - name: Build
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.compute-cap }}
+        run: cargo build --release --locked --features cuda
+
+      - name: Stage extension
+        shell: bash
+        run: |
+          mkdir -p artifact
+          cp "${{ matrix.source }}" "artifact/${{ matrix.output }}"
+
+      - name: Upload extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: artifact/
+          if-no-files-found: error

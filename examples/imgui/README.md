@@ -1,0 +1,33 @@
+# ReaImGui example
+
+`reaspeech_imgui.lua` is a simple interactive ReaScript that transcribes the
+file-backed active take of each selected audio item. It queues the items,
+displays recognition progress, supports cancellation, and lists the completed
+segments with their probability scores as soon as each segment is recognized,
+even while the rest of the file is still processing. Click a segment to move
+REAPER's edit cursor to its position in the corresponding item. Double-click a
+segment to move the cursor and start playback when the transport is stopped.
+The language menu defaults to automatic detection and also offers every
+language code supported by the recognizer.
+Word timestamps can optionally be included in the segment events. When enabled,
+the results view displays each word as a separate timestamped row.
+The hotwords field accepts names, terminology, and phrases to favor during
+recognition.
+
+## Requirements
+
+- The ReaSpeech extension installed as described in the project README
+- [ReaImGui](https://github.com/cfillion/reaimgui), available through ReaPack
+
+## Install and run
+
+Copy `reaspeech_imgui.lua` and `json.lua` into the same directory. In REAPER,
+open **Actions > Show action list**, choose **New action > Load ReaScript**, and
+select `reaspeech_imgui.lua`. Select one or more audio items and run the action.
+
+`json.lua` is vendored from [rxi/json.lua](https://github.com/rxi/json.lua) and
+is distributed under its embedded MIT license.
+
+The example sends each active take's underlying source file to ReaSpeech. It
+does not render item fades, take effects, stretch markers, or other project
+processing before recognition.

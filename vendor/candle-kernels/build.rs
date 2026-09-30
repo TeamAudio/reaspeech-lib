@@ -52,11 +52,27 @@ fn main() -> Result<()> {
         moe_builder = moe_builder.arg("-DNO_BF16_KERNEL");
     }
 
+    // WMMA (Tensor Core) fragments require compute capability >= 7.0 (Volta+).
+    // On older GPUs, force these specific files to compile for sm_70 so nvcc
+    // can resolve the `nvcuda::wmma` API. The resulting code paths are never
+    // actually reachable/launched on pre-Volta hardware (MoE models aren't
+    // used by this crate), so this only needs to satisfy the compiler.
+    if compute_cap < 70 {
+        moe_builder = moe_builder
+            .with_compute_override("moe_wmma.cu", 70)
+            .with_compute_override("moe_wmma_gguf.cu", 70);
+    }
+
     let mut is_target_msvc = false;
     if let Ok(target) = std::env::var("TARGET") {
         if target.contains("msvc") {
             is_target_msvc = true;
             moe_builder = moe_builder.arg("-D_USE_MATH_DEFINES");
+            // Match the dynamic MSVC CRT (/MD) used by the rest of the Rust
+            // build. nvcc's host compiler defaults to the static CRT (/MT),
+            // which causes LNK2038 RuntimeLibrary mismatches when linking
+            // against other crates (e.g. reaper-low) built with /MD.
+            moe_builder = moe_builder.arg("-Xcompiler").arg("-MD");
         }
     }
 

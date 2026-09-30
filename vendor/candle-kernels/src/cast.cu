@@ -183,7 +183,8 @@ CAST_THROUGH_OP(__nv_bfloat16, __nv_fp8_e4m3, float, cast_bf16_f8_e4m3)
 #endif
 #endif
 
-#if __CUDA_ARCH__ >= 530
+// __half2float / __float2half conversions are available on all architectures.
+#if __CUDA_ARCH__ >= 520
 CAST_OP(__half, __half, cast_f16_f16)
 
 CAST_THROUGH_OP(__half, uint8_t,  float, cast_f16_u8)

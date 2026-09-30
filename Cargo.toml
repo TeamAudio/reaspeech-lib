@@ -1,0 +1,53 @@
+[package]
+name = "reaspeech"
+version = "0.3.0"
+edition = "2021"
+description = "Async speech transcription API for REAPER ReaScripts"
+license = "MIT"
+
+[lib]
+name = "reaspeech"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["reaper-extension"]
+reaper-extension = [
+    "dep:reaper-low",
+    "dep:reaper-macros",
+    "dep:reaper-medium",
+]
+metal = [
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+
+[dependencies]
+byteorder = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+ndarray = "0.17"
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+reaper-low = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
+reaper-macros = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
+reaper-medium = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+rubato = { version = "5", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", features = ["all"] }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+strip = "symbols"
+
+[patch.crates-io]
+candle-transformers = { path = "vendor/candle-transformers" }
+candle-metal-kernels = { path = "vendor/candle-metal-kernels" }
+candle-kernels = { path = "vendor/candle-kernels" }

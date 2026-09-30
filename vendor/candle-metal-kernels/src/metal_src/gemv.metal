@@ -520,8 +520,12 @@ void gemv_t(
 
 instantiate_gemv_blocks(float32, float)
 instantiate_gemv_blocks(float16, half)
+#if __METAL_VERSION__ >= 310
 instantiate_gemv_blocks(bfloat16, bfloat)
+#endif
 
 instantiate_gemv_t_blocks(float32, float)
 instantiate_gemv_t_blocks(float16, half)
+#if __METAL_VERSION__ >= 310
 instantiate_gemv_t_blocks(bfloat16, bfloat)
+#endif

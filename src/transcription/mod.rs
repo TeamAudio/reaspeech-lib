@@ -12,9 +12,19 @@ use models::{ensure_model, ensure_vad_model};
 use std::time::Instant;
 
 #[derive(Clone)]
+pub enum AudioSource {
+    File(String),
+    Pcm {
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u32,
+    },
+}
+
+#[derive(Clone)]
 pub struct Request {
     pub job_id: String,
-    pub audio_path: String,
+    pub source: AudioSource,
     pub model_name: String,
     pub language: Option<String>,
     pub translate: bool,
@@ -59,7 +69,14 @@ where
     let job_started = Instant::now();
     emit_stage(&request.job_id, "Decoding audio", 0);
     let audio_started = Instant::now();
-    let audio = decode_audio_16khz_mono(&request.job_id, &request.audio_path, context)?;
+    let audio = match &request.source {
+        AudioSource::File(path) => decode_audio_16khz_mono(&request.job_id, path, context)?,
+        AudioSource::Pcm {
+            samples,
+            sample_rate,
+            channels,
+        } => audio::pcm_16khz_mono(&request.job_id, samples, *sample_rate, *channels, context)?,
+    };
     let range_start_ms = request.start_ms.unwrap_or(0);
     let start_sample = milliseconds_to_samples(range_start_ms).min(audio.len());
     let end_sample = request
@@ -68,7 +85,7 @@ where
         .unwrap_or(audio.len())
         .min(audio.len());
     if start_sample >= end_sample {
-        return Err("The requested audio range is empty or outside the source file".into());
+        return Err("The requested audio range is empty or outside the audio source".into());
     }
     let audio = &audio[start_sample..end_sample];
     inference::profile_job(

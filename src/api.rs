@@ -1,5 +1,5 @@
 use crate::common::WorkerContext;
-use crate::transcription::{self, Request};
+use crate::transcription::{self, AudioSource, Request};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -170,6 +170,10 @@ fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
     if !Path::new(audio_path).is_file() {
         return Err("audio_path does not name a readable file".into());
     }
+    start_source(AudioSource::File(audio_path.to_owned()), options)
+}
+
+fn start_source(source: AudioSource, options: JobOptions) -> Result<String, String> {
     validate_options(&options.model, options.translate, options.beam_size)?;
     if options.start_ms.is_some_and(|value| value < 0)
         || options.end_ms.is_some_and(|value| value < 0)
@@ -195,7 +199,7 @@ fn start_job(audio_path: &str, options: JobOptions) -> Result<String, String> {
 
     let request = Request {
         job_id: job_id.clone(),
-        audio_path: audio_path.to_owned(),
+        source,
         model_name: options.model,
         language: options.language.filter(|value| !value.is_empty()),
         translate: options.translate,
@@ -312,6 +316,42 @@ pub fn start_json(audio_path: &str, job_options_json: &str) -> Result<String, St
 pub fn start(audio_path: impl AsRef<Path>, options: JobOptions) -> Result<Job, String> {
     let audio_path = audio_path.as_ref().to_string_lossy();
     start_job(&audio_path, options).map(|id| Job { id })
+}
+
+/// Starts a job from interleaved floating-point PCM (nominal range -1 to 1).
+/// `samples.len()` must be a nonzero multiple of `channels`. The sample rate
+/// and channel count must be nonzero, and all samples must be finite.
+/// Samples are copied before returning; the caller can immediately reuse them.
+/// Range options and event timestamps use the same semantics as file input.
+pub fn start_from_memory(
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u32,
+    options: JobOptions,
+) -> Result<Job, String> {
+    validate_pcm(samples, sample_rate, channels)?;
+    start_source(
+        AudioSource::Pcm {
+            samples: samples.to_vec(),
+            sample_rate,
+            channels,
+        },
+        options,
+    )
+    .map(|id| Job { id })
+}
+
+fn validate_pcm(samples: &[f32], sample_rate: u32, channels: u32) -> Result<(), String> {
+    if sample_rate == 0 || channels == 0 {
+        return Err("sample_rate and channels must be nonzero".into());
+    }
+    if samples.is_empty() || samples.len() % channels as usize != 0 {
+        return Err("samples must contain a nonempty number of complete interleaved frames".into());
+    }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err("samples must be finite".into());
+    }
+    Ok(())
 }
 
 /// Removes and returns the next serialized event, if one is ready.
@@ -444,6 +484,48 @@ pub unsafe extern "C" fn poll_vararg(arglist: *mut *mut c_void, count: c_int) ->
 pub unsafe extern "C" fn cancel_vararg(arglist: *mut *mut c_void, count: c_int) -> *mut c_void {
     let args = args(arglist, count);
     string_arg(args, 0).map(cancel).unwrap_or(false) as isize as *mut c_void
+}
+
+/// Starts a native C job from interleaved f32 PCM, copied before returning.
+///
+/// # Safety
+/// `samples` must point to `sample_count` initialized, readable, aligned f32
+/// values. JSON must be a valid NUL-terminated string. The output buffer must
+/// be writable for `job_id_out_size` bytes when non-null and the size is positive.
+#[no_mangle]
+pub unsafe extern "C" fn reaspeech_start_from_memory(
+    samples: *const f32,
+    sample_count: usize,
+    sample_rate: u32,
+    channels: u32,
+    job_options_json: *const c_char,
+    job_id_out: *mut c_char,
+    job_id_out_size: c_int,
+) -> bool {
+    let result = (|| {
+        if samples.is_null()
+            || (samples as usize) % std::mem::align_of::<f32>() != 0
+            || sample_count > isize::MAX as usize / std::mem::size_of::<f32>()
+        {
+            return Err("invalid samples pointer or sample_count".into());
+        }
+        if job_options_json.is_null() {
+            return Err("missing job_options_json".into());
+        }
+        let json = CStr::from_ptr(job_options_json)
+            .to_str()
+            .map_err(|_| "job_options_json is not UTF-8".to_owned())?;
+        let options = serde_json::from_str::<JobOptions>(json)
+            .map_err(|error| format!("invalid job_options_json: {error}"))?;
+        start_from_memory(
+            std::slice::from_raw_parts(samples, sample_count),
+            sample_rate,
+            channels,
+            options,
+        )
+        .map(|job| job.id)
+    })();
+    !return_start_result(result, job_id_out.cast(), job_id_out_size).is_null()
 }
 
 /// C ABI entry point. See `reaspeech.h` for documentation.
@@ -659,5 +741,45 @@ mod tests {
         let error =
             serde_json::from_str::<JobOptions>(r#"{"model":"small","word":true}"#).unwrap_err();
         assert!(error.to_string().contains("unknown field `word`"));
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_pcm_without_starting_a_worker() {
+        for (samples, rate, channels) in [
+            (vec![], 16000, 1),
+            (vec![0.0], 0, 1),
+            (vec![0.0], 16000, 0),
+            (vec![0.0], 16000, 2),
+            (vec![f32::NAN], 16000, 1),
+            (vec![f32::INFINITY], 16000, 1),
+        ] {
+            assert!(start_from_memory(&samples, rate, channels, JobOptions::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn c_memory_input_reports_invalid_pointer() {
+        let mut output = [0i8; 128];
+        let ok = unsafe {
+            reaspeech_start_from_memory(
+                std::ptr::null(),
+                1,
+                16000,
+                1,
+                std::ptr::null(),
+                output.as_mut_ptr(),
+                output.len() as c_int,
+            )
+        };
+        assert!(!ok);
+        assert!(unsafe { CStr::from_ptr(output.as_ptr()) }
+            .to_str()
+            .unwrap()
+            .contains("samples"));
     }
 }

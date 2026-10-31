@@ -3,7 +3,7 @@
  *
  * This header declares the C ABI exported by libreaspeech (built as a
  * cdylib/staticlib via `cargo build --release --no-default-features`).
- * The same functions back the REAPER extension's Lua API; see README.md
+ * File-input functions also back the REAPER extension's Lua API; see README.md
  * for the JSON event and JobOptions formats, which are identical here.
  *
  * Threading model:
@@ -28,6 +28,8 @@
 #define REASPEECH_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +63,23 @@ bool reaspeech_start(
  */
 bool reaspeech_start_ex(
     const char *audio_path,
+    const char *job_options_json,
+    char *job_id_out,
+    int job_id_out_size);
+
+/*
+ * Native C/Rust only: starts a job from interleaved float PCM, nominally -1..1.
+ * sample_count counts floats, not frames or bytes, and must be nonzero and
+ * divisible by channels. sample_rate and channels must be nonzero; samples
+ * must be finite. Samples are copied before return and may then be reused.
+ * samples must be aligned and readable for sample_count floats during this
+ * call. Options, ranges, output buffer and events match reaspeech_start_ex.
+ */
+bool reaspeech_start_from_memory(
+    const float *samples,
+    size_t sample_count,
+    uint32_t sample_rate,
+    uint32_t channels,
     const char *job_options_json,
     char *job_id_out,
     int job_id_out_size);

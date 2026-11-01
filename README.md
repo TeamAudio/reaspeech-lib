@@ -192,6 +192,14 @@ above instead of positional arguments, and `reaspeech_cancel` requests
 cancellation of a running job. See the header for full documentation,
 including the threading and buffer-lifetime rules for `reaspeech_poll`.
 
+## Haskell bindings and command-line example
+
+The [`bindings/haskell`](bindings/haskell/README.md) Cabal package provides
+typed Haskell bindings to the C API and a `reaspeech-transcribe` executable.
+It supports timestamped or plain transcripts, streaming JSON events, language
+selection, translation, VAD, word timestamps, hotwords, beam search, and audio ranges.
+See its README for WSL/Ubuntu setup, build commands, and examples.
+
 ## Build and install
 
 Install the [Rust toolchain](https://rustup.rs/) and build the extension from

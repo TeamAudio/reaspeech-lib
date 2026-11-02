@@ -211,26 +211,27 @@ fn start_source(source: AudioSource, options: JobOptions) -> Result<String, Stri
         end_ms: options.end_ms,
     };
     let worker_context = context().clone();
+    let worker_job_id = job_id.clone();
     thread::spawn(move || {
         let started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| {
             transcription::run(
-                &request,
+                request,
                 &worker_context,
                 |language| {
                     push_event(
-                        &request.job_id,
+                        &worker_job_id,
                         Event::DetectedLanguage {
-                            job_id: request.job_id.clone(),
+                            job_id: worker_job_id.clone(),
                             language: language.to_owned(),
                         },
                     );
                 },
                 |segment| {
                     push_event(
-                        &request.job_id,
+                        &worker_job_id,
                         Event::Segment {
-                            job_id: request.job_id.clone(),
+                            job_id: worker_job_id.clone(),
                             segment: segment.clone(),
                         },
                     );
@@ -245,32 +246,32 @@ fn start_source(source: AudioSource, options: JobOptions) -> Result<String, Stri
                 .unwrap_or("unknown panic");
             Err(format!("Transcription worker panicked: {detail}"))
         });
-        if worker_context.cancellation.is_cancelled(&request.job_id) {
+        if worker_context.cancellation.is_cancelled(&worker_job_id) {
             push_event(
-                &request.job_id,
+                &worker_job_id,
                 Event::Cancelled {
-                    job_id: request.job_id.clone(),
+                    job_id: worker_job_id.clone(),
                 },
             );
         } else {
             match result {
                 Ok(()) => push_event(
-                    &request.job_id,
+                    &worker_job_id,
                     Event::Completed {
-                        job_id: request.job_id.clone(),
+                        job_id: worker_job_id.clone(),
                         elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                     },
                 ),
                 Err(error) => push_event(
-                    &request.job_id,
+                    &worker_job_id,
                     Event::Error {
-                        job_id: Some(request.job_id.clone()),
+                        job_id: Some(worker_job_id.clone()),
                         error,
                     },
                 ),
             }
         }
-        worker_context.cancellation.finish(&request.job_id);
+        worker_context.cancellation.finish(&worker_job_id);
     });
     Ok(job_id)
 }

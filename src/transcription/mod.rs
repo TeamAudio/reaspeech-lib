@@ -56,7 +56,7 @@ pub struct Segment {
 }
 
 pub fn run<F, G>(
-    request: &Request,
+    request: Request,
     context: &WorkerContext,
     on_language: G,
     mut on_segment: F,
@@ -69,13 +69,18 @@ where
     let job_started = Instant::now();
     emit_stage(&request.job_id, "Decoding audio", 0);
     let audio_started = Instant::now();
-    let audio = match &request.source {
-        AudioSource::File(path) => decode_audio_16khz_mono(&request.job_id, path, context)?,
+    let audio = match request.source {
+        AudioSource::File(path) => decode_audio_16khz_mono(&request.job_id, &path, context)?,
         AudioSource::Pcm {
             samples,
             sample_rate,
             channels,
-        } => audio::pcm_16khz_mono(&request.job_id, samples, *sample_rate, *channels, context)?,
+        } => {
+            let audio =
+                audio::pcm_16khz_mono(&request.job_id, &samples, sample_rate, channels, context)?;
+            drop(samples);
+            audio
+        }
     };
     let range_start_ms = request.start_ms.unwrap_or(0);
     let start_sample = milliseconds_to_samples(range_start_ms).min(audio.len());

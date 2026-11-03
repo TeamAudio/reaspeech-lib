@@ -1,0 +1,44 @@
+name: Haskell bindings
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bindings:
+    name: ${{ matrix.os }} shared-library bindings
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    env:
+      ORT_CACHE_DIR: ${{ github.workspace }}/.ort-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.6.7'
+          cabal-version: '3.12.1.0'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: haskell-bindings
+          cache-directories: .ort-cache
+      - name: Build standalone shared library
+        run: cargo build --release --locked --no-default-features
+      - name: Build and test Haskell package
+        working-directory: bindings/haskell
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export DYLD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          cabal update
+          cabal configure --extra-lib-dirs="$GITHUB_WORKSPACE/target/release"
+          cabal build all
+          cabal test --test-show-details=direct
+          cabal run -v0 reaspeech-transcribe -- --help

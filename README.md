@@ -198,7 +198,8 @@ The [`bindings/haskell`](bindings/haskell/README.md) Cabal package provides
 typed Haskell bindings to the C API and a `reaspeech-transcribe` executable.
 It supports timestamped or plain transcripts, streaming JSON events, language
 selection, translation, VAD, word timestamps, hotwords, beam search, and audio ranges.
-See its README for WSL/Ubuntu setup, build commands, and examples.
+See its README for native macOS and Linux setup, Windows via WSL2, build
+commands, runtime library paths, and examples.
 
 ## Build and install
 

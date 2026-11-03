@@ -115,6 +115,29 @@ pub fn decode_audio_16khz_mono(
     Ok(output)
 }
 
+pub(super) fn pcm_16khz_mono(
+    job_id: &str,
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u32,
+    context: &WorkerContext,
+) -> Result<Vec<f32>, String> {
+    let mut audio = StreamingAudio::new(sample_rate, 0)?;
+    for chunk in samples.chunks(1024 * channels as usize) {
+        if context.cancellation.is_cancelled(job_id) {
+            return Err("cancelled".into());
+        }
+        let mono: Vec<f32> = chunk
+            .chunks_exact(channels as usize)
+            .map(|frame| {
+                (frame.iter().map(|sample| *sample as f64).sum::<f64>() / channels as f64) as f32
+            })
+            .collect();
+        audio.push(&mono)?;
+    }
+    audio.finish()
+}
+
 fn append_mono_samples(
     decoded: symphonia::core::audio::AudioBufferRef<'_>,
     sample_buffer: &mut Option<SampleBuffer<f32>>,
@@ -295,5 +318,34 @@ mod tests {
 
         assert_eq!(small_packets.len(), 16_041);
         assert_eq!(small_packets, large_packets);
+    }
+}
+
+#[cfg(test)]
+mod pcm_tests {
+    use super::*;
+
+    #[test]
+    fn memory_pcm_downmixes_and_resamples() {
+        let context = WorkerContext::default();
+        let stereo = vec![0.25, 0.75, -0.5, 0.5];
+        assert_eq!(
+            pcm_16khz_mono("pcm-test", &stereo, 16000, 2, &context).unwrap(),
+            vec![0.5, 0.0]
+        );
+        let samples = vec![0.25; 48000 * 2];
+        let output = pcm_16khz_mono("pcm-test", &samples, 48000, 2, &context).unwrap();
+        assert_eq!(output.len(), 16000);
+        assert!(output.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn memory_pcm_honors_cancellation() {
+        let context = WorkerContext::default();
+        context.cancellation.cancel("cancel-pcm");
+        assert_eq!(
+            pcm_16khz_mono("cancel-pcm", &[0.0], 16000, 1, &context).unwrap_err(),
+            "cancelled"
+        );
     }
 }

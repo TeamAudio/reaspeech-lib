@@ -300,3 +300,17 @@ release does not provide prebuilt `x86_64-apple-darwin` binaries.
 Every request runs on a Rust worker thread. The worker only writes serialized
 events to a synchronized queue. Lua reads that queue from REAPER's main thread
 with `ReaSpeech_Poll`; no Lua or REAPER function is called from worker threads.
+
+## Native audio from memory
+
+C and Rust clients can submit interleaved `f32` PCM without writing a file.
+Use `api::start_from_memory(&samples, sample_rate, channels, options)` in Rust,
+or `reaspeech_start_from_memory(samples, sample_count, sample_rate, channels,
+options_json, job_id, sizeof(job_id))` in C (see `include/reaspeech.h`).
+`sample_count` is the total number of floats across all channels. Samples
+are nominally in -1..1, must be finite, and must contain complete, nonempty
+frames. Sample rate and channel count must be positive. The library copies
+samples before returning, so the caller can immediately release its buffer.
+The worker averages channels to mono and resamples to 16 kHz using the same
+resampler as file input. Range options, timestamps, polling and cancellation
+are unchanged. This entry point is not registered with REAPER/Lua.

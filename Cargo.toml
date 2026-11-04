@@ -29,7 +29,7 @@ candle-core = "0.11"
 candle-nn = "0.11"
 candle-transformers = "0.11"
 ndarray = "0.17"
-ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ort = { version = "=2.0.0-rc.15", features = ["ndarray"] }
 reaper-low = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
 reaper-macros = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }
 reaper-medium = { git = "https://github.com/helgoboss/reaper-rs.git", branch = "master", optional = true }

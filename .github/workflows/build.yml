@@ -92,7 +92,8 @@ jobs:
         shell: bash
         run: |
           python -m zipfile -e "target/sdk/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}.zip" target/sdk-extracted
-          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          sdk_root="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          cmake -S "$sdk_root/examples/c-sdk" -B target/sdk-smoke
           cmake --build target/sdk-smoke --config Release
           ctest --test-dir target/sdk-smoke -C Release --output-on-failure
 
@@ -157,7 +158,8 @@ jobs:
         shell: bash
         run: |
           python -m zipfile -e "target/sdk/reaspeech-sdk-macos-arm64-metal.zip" target/sdk-extracted
-          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/reaspeech-sdk-macos-arm64-metal"
+          sdk_root="$PWD/target/sdk-extracted/reaspeech-sdk-macos-arm64-metal"
+          cmake -S "$sdk_root/examples/c-sdk" -B target/sdk-smoke
           cmake --build target/sdk-smoke --config Release
           ctest --test-dir target/sdk-smoke -C Release --output-on-failure
 
@@ -298,7 +300,8 @@ jobs:
             ln -sf "$stub" target/cuda-link-stubs/libcuda.so.1
             link_args+=("-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,$PWD/target/cuda-link-stubs")
           fi
-          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}" "${link_args[@]}"
+          sdk_root="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}" "${link_args[@]}"
+          cmake -S "$sdk_root/examples/c-sdk" -B target/sdk-smoke
           cmake --build target/sdk-smoke --config Release
 
       - name: Upload standalone C SDK

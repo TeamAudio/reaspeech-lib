@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(reaspeech_sdk_smoke LANGUAGES C CXX)
-find_package(ReaSpeech CONFIG REQUIRED)
+find_package(ReaSpeech CONFIG REQUIRED HINTS "${CMAKE_CURRENT_LIST_DIR}/../..")
 foreach(language IN ITEMS c cpp)
   add_executable(smoke_${language} smoke.${language})
   target_link_libraries(smoke_${language} PRIVATE ReaSpeech::reaspeech)

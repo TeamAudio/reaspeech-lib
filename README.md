@@ -166,6 +166,7 @@ macOS arm64 (Metal). Each archive contains a top-level directory with:
 - `lib/libreaspeech.so` on Linux or `lib/libreaspeech.dylib` on macOS.
 - `lib/cmake/ReaSpeech/ReaSpeechConfig.cmake`, README, license, and file hashes.
 - Any shared ONNX Runtime libraries copied by the build, beside ReaSpeech.
+- `examples/c-sdk/`: C and C++ smoke tests.
 
 Select one backend, extract the archive, and point `CMAKE_PREFIX_PATH` at its
 extracted top-level directory:
@@ -179,9 +180,20 @@ Copy the SDK runtime libraries into your application's distribution. On Windows,
 put every DLL from `bin/` beside the executable. On Linux and macOS, copy the
 shared libraries from `lib/` to your application's library directory and configure
 its loader search path (`$ORIGIN` or `@rpath`) accordingly. The macOS library uses
-`@rpath/libreaspeech.dylib` as its install name. See `examples/c-sdk` for a minimal
-C/C++ consumer that CI builds for every SDK. CI runs it for CPU and Metal
-packages. CUDA jobs check linking because the runners lack the NVIDIA driver.
+`@rpath/libreaspeech.dylib` as its install name.
+
+To run the bundled smoke tests, open a terminal in the extracted SDK's
+top-level directory with CMake 3.21 or newer and a C/C++ compiler:
+
+```sh
+cmake -S examples/c-sdk -B build-smoke
+cmake --build build-smoke --config Release
+ctest --test-dir build-smoke -C Release --output-on-failure
+```
+
+The tests exercise the C API without downloading models. Running them with a
+CUDA SDK requires the matching CUDA runtime and NVIDIA driver. CI builds the
+example from each extracted archive and runs it for CPU and Metal packages.
 
 Linux SDKs are built on Ubuntu 24.04 and require a compatible system runtime;
 they do not target older glibc distributions. Windows SDKs use MSVC and require

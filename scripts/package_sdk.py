@@ -33,6 +33,10 @@ def main():
     files += [(ROOT / 'include/reaspeech.h', Path('include/reaspeech.h')),
               (ROOT / 'LICENSE', Path('LICENSE')),
               (ROOT / 'README.md', Path('README.md'))]
+    example = Path('examples/c-sdk')
+    for filename in ('CMakeLists.txt', 'smoke.c', 'smoke.cpp'):
+        relative_path = example / filename
+        files.append((ROOT / relative_path, relative_path))
     # ort's copy-dylibs feature places any shared ONNX Runtime dependencies here.
     for pattern in ('*onnxruntime*.dll', '*onnxruntime*.so*', '*onnxruntime*.dylib'):
         files += [(p, Path(location) / p.name) for p in args.build_dir.glob(pattern)]

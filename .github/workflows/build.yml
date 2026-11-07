@@ -300,8 +300,8 @@ jobs:
             ln -sf "$stub" target/cuda-link-stubs/libcuda.so.1
             link_args+=("-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,$PWD/target/cuda-link-stubs")
           fi
-          sdk_root="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}" "${link_args[@]}"
-          cmake -S "$sdk_root/examples/c-sdk" -B target/sdk-smoke
+          sdk_root="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          cmake -S "$sdk_root/examples/c-sdk" -B target/sdk-smoke "${link_args[@]}"
           cmake --build target/sdk-smoke --config Release
 
       - name: Upload standalone C SDK

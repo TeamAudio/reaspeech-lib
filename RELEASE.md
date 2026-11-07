@@ -1,4 +1,4 @@
-# ReaPack release guide
+# Binary SDK and ReaPack release guide
 
 ReaSpeech Lib is published as four mutually exclusive ReaPack extension
 packages: CPU, Metal, CUDA 12, and CUDA 13. ReaPack can filter downloads by
@@ -38,7 +38,8 @@ register the same ReaScript API, so loading multiple copies is unsupported.
        python scripts/publish_reapack.py --run-id RUN_ID --release \
          --changelog "Describe the release"
 
-   This creates the `vVERSION` GitHub release and uploads all seven binaries.
+   This creates the `vVERSION` GitHub release and uploads all seven extension
+   binaries, seven standalone C SDK archives, and their SHA-256 checksum files.
    Pass `--tag TAG` to override the tag. Existing releases are never replaced.
 6. Review the descriptor and index commits in `reascripts`, then push that
    repository manually. No extension binaries are committed to `reascripts`.
@@ -46,4 +47,8 @@ register the same ReaScript API, so loading multiple copies is unsupported.
 The script deliberately does not push either repository. `--release` also
 refuses to run over existing tracked changes in `reascripts`. For testing
 without downloading, pass `--artifacts-dir PATH`; it must contain the seven
-artifact directories produced by the Build workflow.
+extension artifact directories and seven SDK artifact directories produced by
+the Build workflow. SDK artifacts contain the `.zip` and `.zip.sha256` files;
+these are published unchanged alongside the ReaPack binaries. The SDKs are
+independent of the ReaPack descriptors and can be consumed directly from a
+versioned release URL.

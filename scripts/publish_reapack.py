@@ -25,6 +25,8 @@ ARTIFACTS = {
     "reaspeech-linux-x86_64-cuda13": "reaper_reaspeech.so",
 }
 
+SDK_ARTIFACTS = {name.replace("reaspeech-", "reaspeech-sdk-", 1) for name in ARTIFACTS}
+
 OUTPUTS = {
     "reaspeech-windows-x86_64-cpu": "reaper_reaspeech_cpu.dll",
     "reaspeech-linux-x86_64-cpu": "reaper_reaspeech_cpu.so",
@@ -136,6 +138,12 @@ def validate_artifacts(path: Path) -> None:
         if not expected.is_file():
             raise PublishError(f"missing artifact file: {expected}")
 
+    for artifact in sorted(SDK_ARTIFACTS):
+        for suffix in (".zip", ".zip.sha256"):
+            expected = path / artifact / (artifact + suffix)
+            if not expected.is_file():
+                raise PublishError(f"missing SDK artifact: {expected}")
+
 
 def stage_release_assets(artifacts: Path, destination: Path) -> list[Path]:
     destination.mkdir(parents=True, exist_ok=True)
@@ -144,6 +152,11 @@ def stage_release_assets(artifacts: Path, destination: Path) -> list[Path]:
         output = destination / output_name
         shutil.copy2(artifacts / artifact / ARTIFACTS[artifact], output)
         assets.append(output)
+    for artifact in sorted(SDK_ARTIFACTS):
+        for suffix in (".zip", ".zip.sha256"):
+            output = destination / (artifact + suffix)
+            shutil.copy2(artifacts / artifact / output.name, output)
+            assets.append(output)
     return assets
 
 

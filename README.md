@@ -151,8 +151,47 @@ loop {
 ## C API
 
 Applications written in C, C++, or any language with a C FFI can embed
-ReaSpeech directly, without REAPER. Build the library without the
-`reaper-extension` feature (its default REAPER dependencies are skipped):
+ReaSpeech directly, without REAPER. The **Build** workflow produces prebuilt
+shared-library SDKs named `reaspeech-sdk-<platform>-<architecture>-<backend>.zip`.
+The release process publishes these archives as
+[GitHub release assets](https://github.com/TeamAudio/reaspeech-lib/releases).
+Consumers need no Rust toolchain.
+
+SDKs cover Windows x86_64 and Linux x86_64 (CPU, CUDA 12, CUDA 13), and
+macOS arm64 (Metal). Each archive contains a top-level directory with:
+
+- `include/reaspeech.h`: the C ABI header.
+- `bin/reaspeech.dll` and `lib/reaspeech.dll.lib` on Windows; the `.lib` is
+  the DLL import library, not a static Rust library.
+- `lib/libreaspeech.so` on Linux or `lib/libreaspeech.dylib` on macOS.
+- `lib/cmake/ReaSpeech/ReaSpeechConfig.cmake`, README, license, and file hashes.
+- Any shared ONNX Runtime libraries copied by the build, beside ReaSpeech.
+
+Select one backend, extract the archive, and point `CMAKE_PREFIX_PATH` at its
+extracted top-level directory:
+
+```cmake
+find_package(ReaSpeech CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE ReaSpeech::reaspeech)
+```
+
+Copy the SDK runtime libraries into your application's distribution. On Windows,
+put every DLL from `bin/` beside the executable. On Linux and macOS, copy the
+shared libraries from `lib/` to your application's library directory and configure
+its loader search path (`$ORIGIN` or `@rpath`) accordingly. The macOS library uses
+`@rpath/libreaspeech.dylib` as its install name. See `examples/c-sdk` for a minimal
+C/C++ consumer that CI builds and runs without downloading models.
+
+Linux SDKs are built on Ubuntu 24.04 and require a compatible system runtime;
+they do not target older glibc distributions. Windows SDKs use MSVC and require
+the Microsoft Visual C++ runtime. macOS SDKs target macOS 11 or newer. CUDA SDKs
+also require the matching CUDA runtime libraries and a compatible NVIDIA driver;
+CUDA is not bundled. Model weights are downloaded separately on first use; set
+`MODELS_PATH` to a writable cache directory before starting jobs. SDK archives
+have adjacent `.zip.sha256` files for download verification.
+
+To build from source instead, disable the `reaper-extension` feature (its default
+REAPER dependencies are skipped):
 
 ```sh
 cargo build --release --no-default-features

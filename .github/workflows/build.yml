@@ -30,11 +30,13 @@ jobs:
           - name: Windows (CPU)
             os: windows-latest
             artifact: reaspeech-windows-x86_64-cpu
+            sdk: windows-x86_64-cpu
             source: target/release/reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Linux (CPU)
             os: ubuntu-24.04
             artifact: reaspeech-linux-x86_64-cpu
+            sdk: linux-x86_64-cpu
             source: target/release/libreaspeech.so
             output: reaper_reaspeech.so
 
@@ -53,7 +55,9 @@ jobs:
           cache-directories: .ort-cache
 
       - name: Test
-        run: cargo test --locked
+        run: |
+          cargo test --locked
+          cargo test --locked --no-default-features
 
       - name: Build
         run: cargo build --release --locked
@@ -69,6 +73,36 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: artifact/
+          if-no-files-found: error
+
+      - name: Build standalone C SDK
+        shell: bash
+        run: |
+          link_args=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            link_args=(-- -C link-arg=-Wl,-soname,libreaspeech.so -C 'link-arg=-Wl,-rpath,$ORIGIN')
+          fi
+          cargo rustc --release --locked --no-default-features --target-dir target/sdk-build "${link_args[@]}"
+
+      - name: Package standalone C SDK
+        shell: bash
+        run: python scripts/package_sdk.py --build-dir target/sdk-build/release --name ${{ format('reaspeech-sdk-{0}', matrix.sdk) }}
+
+      - name: Verify C and C++ SDK consumers
+        shell: bash
+        run: |
+          python -m zipfile -e "target/sdk/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}.zip" target/sdk-extracted
+          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          cmake --build target/sdk-smoke --config Release
+          ctest --test-dir target/sdk-smoke -C Release --output-on-failure
+
+      - name: Upload standalone C SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('reaspeech-sdk-{0}', matrix.sdk) }}
+          path: |
+            target/sdk/*.zip
+            target/sdk/*.zip.sha256
           if-no-files-found: error
 
   build-macos:
@@ -110,6 +144,32 @@ jobs:
           path: artifact/
           if-no-files-found: error
 
+      - name: Build standalone C SDK
+        shell: bash
+        run: |
+          cargo rustc --release --locked --no-default-features --target-dir target/sdk-build --features metal --target aarch64-apple-darwin -- -C link-arg=-Wl,-install_name,@rpath/libreaspeech.dylib
+
+      - name: Package standalone C SDK
+        shell: bash
+        run: python scripts/package_sdk.py --build-dir target/sdk-build/aarch64-apple-darwin/release --name reaspeech-sdk-macos-arm64-metal
+
+      - name: Verify C and C++ SDK consumers
+        shell: bash
+        run: |
+          python -m zipfile -e "target/sdk/reaspeech-sdk-macos-arm64-metal.zip" target/sdk-extracted
+          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/reaspeech-sdk-macos-arm64-metal"
+          cmake --build target/sdk-smoke --config Release
+          ctest --test-dir target/sdk-smoke -C Release --output-on-failure
+
+      - name: Upload standalone C SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: reaspeech-sdk-macos-arm64-metal
+          path: |
+            target/sdk/*.zip
+            target/sdk/*.zip.sha256
+          if-no-files-found: error
+
   build-cuda:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -122,6 +182,7 @@ jobs:
             cuda-version: 13.1.0
             compute-cap: '75'
             artifact: reaspeech-windows-x86_64-cuda13
+            sdk: windows-x86_64-cuda13
             source: target/release/reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Windows (CUDA 12)
@@ -129,6 +190,7 @@ jobs:
             cuda-version: 12.5.0
             compute-cap: '61'
             artifact: reaspeech-windows-x86_64-cuda12
+            sdk: windows-x86_64-cuda12
             source: target/release/reaspeech.dll
             output: reaper_reaspeech.dll
           - name: Linux (CUDA 13)
@@ -136,6 +198,7 @@ jobs:
             cuda-version: 13.1.0
             compute-cap: '75'
             artifact: reaspeech-linux-x86_64-cuda13
+            sdk: linux-x86_64-cuda13
             source: target/release/libreaspeech.so
             output: reaper_reaspeech.so
           - name: Linux (CUDA 12)
@@ -143,6 +206,7 @@ jobs:
             cuda-version: 12.5.0
             compute-cap: '61'
             artifact: reaspeech-linux-x86_64-cuda12
+            sdk: linux-x86_64-cuda12
             source: target/release/libreaspeech.so
             output: reaper_reaspeech.so
 
@@ -197,4 +261,36 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: artifact/
+          if-no-files-found: error
+
+      - name: Build standalone C SDK
+        shell: bash
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.compute-cap }}
+        run: |
+          link_args=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            link_args=(-- -C link-arg=-Wl,-soname,libreaspeech.so -C 'link-arg=-Wl,-rpath,$ORIGIN')
+          fi
+          cargo rustc --release --locked --no-default-features --target-dir target/sdk-build --features cuda "${link_args[@]}"
+
+      - name: Package standalone C SDK
+        shell: bash
+        run: python scripts/package_sdk.py --build-dir target/sdk-build/release --name ${{ format('reaspeech-sdk-{0}', matrix.sdk) }}
+
+      - name: Verify C and C++ SDK consumers
+        shell: bash
+        run: |
+          python -m zipfile -e "target/sdk/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}.zip" target/sdk-extracted
+          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          cmake --build target/sdk-smoke --config Release
+          ctest --test-dir target/sdk-smoke -C Release --output-on-failure
+
+      - name: Upload standalone C SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('reaspeech-sdk-{0}', matrix.sdk) }}
+          path: |
+            target/sdk/*.zip
+            target/sdk/*.zip.sha256
           if-no-files-found: error

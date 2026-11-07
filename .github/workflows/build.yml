@@ -263,28 +263,43 @@ jobs:
           path: artifact/
           if-no-files-found: error
 
-      - name: Build standalone C SDK
+      - name: Build standalone C SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.compute-cap }}
+        run: cargo rustc --release --locked --no-default-features --target-dir target/sdk-build --features cuda
+
+      - name: Build standalone C SDK (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.compute-cap }}
         run: |
-          link_args=()
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            link_args=(-- -C link-arg=-Wl,-soname,libreaspeech.so -C 'link-arg=-Wl,-rpath,$ORIGIN')
-          fi
-          cargo rustc --release --locked --no-default-features --target-dir target/sdk-build --features cuda "${link_args[@]}"
+          cargo rustc --release --locked --no-default-features --target-dir target/sdk-build --features cuda \
+            -- -C link-arg=-Wl,-soname,libreaspeech.so -C 'link-arg=-Wl,-rpath,$ORIGIN'
 
       - name: Package standalone C SDK
         shell: bash
         run: python scripts/package_sdk.py --build-dir target/sdk-build/release --name ${{ format('reaspeech-sdk-{0}', matrix.sdk) }}
 
-      - name: Verify C and C++ SDK consumers
+      # Hosted runners lack the NVIDIA driver required to load the CUDA SDK.
+      - name: Verify C and C++ SDK consumer linking
         shell: bash
         run: |
           python -m zipfile -e "target/sdk/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}.zip" target/sdk-extracted
-          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}"
+          link_args=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # Resolve the driver's SONAME at link time on a runner without an NVIDIA driver.
+            # Keep the stub outside the SDK and out of the executable's runtime search path.
+            stub="$CUDA_PATH/lib64/stubs/libcuda.so"
+            test -f "$stub"
+            mkdir -p target/cuda-link-stubs
+            ln -sf "$stub" target/cuda-link-stubs/libcuda.so.1
+            link_args+=("-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,$PWD/target/cuda-link-stubs")
+          fi
+          cmake -S examples/c-sdk -B target/sdk-smoke -DCMAKE_PREFIX_PATH="$PWD/target/sdk-extracted/${{ format('reaspeech-sdk-{0}', matrix.sdk) }}" "${link_args[@]}"
           cmake --build target/sdk-smoke --config Release
-          ctest --test-dir target/sdk-smoke -C Release --output-on-failure
 
       - name: Upload standalone C SDK
         uses: actions/upload-artifact@v4

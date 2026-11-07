@@ -180,7 +180,8 @@ put every DLL from `bin/` beside the executable. On Linux and macOS, copy the
 shared libraries from `lib/` to your application's library directory and configure
 its loader search path (`$ORIGIN` or `@rpath`) accordingly. The macOS library uses
 `@rpath/libreaspeech.dylib` as its install name. See `examples/c-sdk` for a minimal
-C/C++ consumer that CI builds and runs without downloading models.
+C/C++ consumer that CI builds for every SDK. CI runs it for CPU and Metal
+packages. CUDA jobs check linking because the runners lack the NVIDIA driver.
 
 Linux SDKs are built on Ubuntu 24.04 and require a compatible system runtime;
 they do not target older glibc distributions. Windows SDKs use MSVC and require

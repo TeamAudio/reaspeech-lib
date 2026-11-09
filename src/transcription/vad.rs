@@ -1,10 +1,20 @@
 use ndarray::{Array1, Array2, Array3};
 use ort::{inputs, session::Session, value::Tensor};
 use std::path::Path;
+use std::sync::OnceLock;
 
 const FRAME_SAMPLES: usize = 512;
 const CONTEXT_SAMPLES: usize = 64;
 const STATE_DIM: usize = 128;
+
+fn environment() -> Result<&'static ort::environment::Environment, String> {
+    // ort permits only one environment per process; reuse it across VAD jobs.
+    static ENVIRONMENT: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
+    ENVIRONMENT
+        .get_or_init(|| ort::init().build().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(Clone::clone)
+}
 
 pub struct SileroVad {
     session: Session,
@@ -14,7 +24,7 @@ pub struct SileroVad {
 
 impl SileroVad {
     pub fn from_file(path: &Path) -> Result<Self, String> {
-        let session = Session::builder()
+        let session = Session::builder(environment()?)
             .map_err(|error| error.to_string())?
             .with_intra_threads(1)
             .map_err(|error| error.to_string())?
@@ -66,5 +76,33 @@ impl SileroVad {
         self.context
             .copy_from_slice(&samples[FRAME_SAMPLES - CONTEXT_SAMPLES..]);
         Ok(probability.clamp(0.0, 1.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a downloaded Silero VAD model"]
+    fn vad_sessions_share_environment_across_jobs() {
+        let path = std::env::var_os("REASPEECH_TEST_VAD_MODEL")
+            .map(std::path::PathBuf::from)
+            .expect("set REASPEECH_TEST_VAD_MODEL to a downloaded Silero VAD model");
+        // Exercise both concurrent initialization and later jobs after sessions drop.
+        for _ in 0..2 {
+            std::thread::scope(|scope| {
+                for _ in 0..2 {
+                    let path = &path;
+                    scope.spawn(move || {
+                        let mut vad = SileroVad::from_file(path).unwrap();
+                        for _ in 0..3 {
+                            let probability = vad.process(&[0.0; FRAME_SAMPLES]).unwrap();
+                            assert!((0.0..=1.0).contains(&probability));
+                        }
+                    });
+                }
+            });
+        }
     }
 }

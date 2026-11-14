@@ -5,7 +5,7 @@ mod transcription;
 
 #[cfg(feature = "reaper-extension")]
 use reaper_low::PluginContext;
-#[cfg(feature = "reaper-extension")]
+#[cfg(all(feature = "reaper-extension", not(windows)))]
 use reaper_macros::reaper_extension_plugin;
 #[cfg(feature = "reaper-extension")]
 use reaper_medium::ReaperSession;
@@ -13,7 +13,7 @@ use reaper_medium::ReaperSession;
 use std::error::Error;
 
 #[cfg(feature = "reaper-extension")]
-#[reaper_extension_plugin]
+#[cfg_attr(not(windows), reaper_extension_plugin)]
 fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
     let mut session = Box::new(ReaperSession::load(context));
     if std::env::var_os("MODELS_PATH").is_none() {
@@ -64,4 +64,29 @@ fn plugin_main(context: PluginContext) -> Result<(), Box<dyn Error>> {
 
     Box::leak(session);
     Ok(())
+}
+
+#[cfg(all(feature = "reaper-extension", windows))]
+#[no_mangle]
+unsafe extern "C" fn ReaperPluginEntry(
+    instance: reaper_low::raw::HINSTANCE,
+    info: *mut reaper_low::raw::reaper_plugin_info_t,
+) -> std::ffi::c_int {
+    let context = reaper_low::static_plugin_context();
+    reaper_low::bootstrap_extension_plugin(instance, info, context, plugin_main)
+}
+
+#[cfg(all(feature = "reaper-extension", windows))]
+#[no_mangle]
+extern "system" fn DllMain(
+    instance: reaper_low::raw::HINSTANCE,
+    reason: u32,
+    _: *const std::ffi::c_void,
+) -> u32 {
+    if reason == reaper_low::raw::DLL_PROCESS_ATTACH {
+        let _ = reaper_low::register_hinstance(instance);
+    }
+    // ReaSpeech registers no destroy hooks. The hook runner uses Rust thread-local
+    // state that can already be destroyed when Windows calls DLL_PROCESS_DETACH.
+    1
 }

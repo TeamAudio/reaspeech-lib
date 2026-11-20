@@ -79,6 +79,8 @@ impl MultiHeadAttention {
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
         let q = self.query.forward(x)?;
+        let head_dim = q.dim(2)? / self.n_head;
+        let scale = (head_dim as f64).powf(-0.25);
         let (k, v) = match xa {
             None if self.use_self_attention_kv_cache => {
                 if flush_cache {
@@ -93,12 +95,12 @@ impl MultiHeadAttention {
                 }
                 self.kv_cache = Some((k.clone(), v.clone()));
 
-                (k, v)
+                self.prepare_attention_kv(&k, &v, scale)?
             }
             None => {
                 let k = self.key.forward(x)?;
                 let v = self.value.forward(x)?;
-                (k, v)
+                self.prepare_attention_kv(&k, &v, scale)?
             }
             Some(x) => {
                 if flush_cache {
@@ -107,15 +109,20 @@ impl MultiHeadAttention {
                 if let Some((k, v)) = &self.kv_cache {
                     (k.clone(), v.clone())
                 } else {
-                    let k = self.key.forward(x)?;
-                    let v = self.value.forward(x)?;
+                    // The encoder output is fixed for the chunk, so reuse the
+                    // scaled, transposed keys and contiguous values across tokens.
+                    let (k, v) = self.prepare_attention_kv(
+                        &self.key.forward(x)?,
+                        &self.value.forward(x)?,
+                        scale,
+                    )?;
                     self.kv_cache = Some((k.clone(), v.clone()));
                     (k, v)
                 }
             }
         };
         std::mem::drop(_enter);
-        let wv = self.qkv_attention(&q, &k, &v, mask)?;
+        let wv = self.qkv_attention(&q, &k, &v, mask, scale)?;
         let _enter = self.span.enter();
         let out = self.out.forward(&wv)?;
 
@@ -128,22 +135,26 @@ impl MultiHeadAttention {
         x.reshape(target_dims)?.transpose(1, 2)
     }
 
+    fn prepare_attention_kv(&self, k: &Tensor, v: &Tensor, scale: f64) -> Result<(Tensor, Tensor)> {
+        let k = (self.reshape_head(k)?.transpose(2, 3)? * scale)?;
+        let v = self.reshape_head(v)?.contiguous()?;
+        Ok((k, v))
+    }
+
     fn qkv_attention(
         &mut self,
         q: &Tensor,
         k: &Tensor,
         v: &Tensor,
         mask: Option<&Tensor>,
+        scale: f64,
     ) -> Result<Tensor> {
         let _ = self.span.enter();
-        let (_, n_ctx, n_state) = q.dims3()?;
-        let scale = ((n_state / self.n_head) as f64).powf(-0.25);
+        let n_ctx = q.dim(1)?;
         let q = (self.reshape_head(q)? * scale)?;
-        let k = (self.reshape_head(k)?.transpose(2, 3)? * scale)?;
-        let v = self.reshape_head(v)?.contiguous()?;
         let mut qk = {
             let _enter = self.matmul_span.enter();
-            q.matmul(&k)?
+            q.matmul(k)?
         };
         if let Some(mask) = mask {
             let mask = mask.i((0..n_ctx, 0..n_ctx))?;
@@ -162,7 +173,7 @@ impl MultiHeadAttention {
         };
         let wv = {
             let _enter = self.matmul_span.enter();
-            w.matmul(&v)?
+            w.matmul(v)?
         }
         .transpose(1, 2)?
         .flatten_from(2)?;
